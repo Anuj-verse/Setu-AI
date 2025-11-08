@@ -11,11 +11,7 @@ const Index = () => {
     <div className="min-h-screen bg-background">
       <Navigation />
       <HeroSection />
-      <ProblemSection />
-      <SolutionSection />
-      <FeaturesSection />
-      <TeamSection />
-      <ContactSection />
+      
       
       {/* Footer */}
       <footer className="bg-card/50 border-t border-border py-8">

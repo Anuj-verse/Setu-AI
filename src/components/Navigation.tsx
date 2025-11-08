@@ -9,7 +9,6 @@ const Navigation = () => {
   const navItems = [
     { name: "Home", href: "/" },
     { name: "Dashboard", href: "/dashboard" },
-    { name: "Map Monitor", href: "/map" },
     { name: "Simulation", href: "/arduino" },
     { name: "Features", href: "#features" },
     { name: "Team", href: "#team" },

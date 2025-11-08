@@ -24,13 +24,13 @@ const HeroSection = () => {
       {/* Content */}
       <div className="container mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
       <div className="max-w-4xl mx-auto text-center">
-        {/* Badge */}
+        {/* Badge
         <div className={`inline-flex items-center space-x-2 bg-primary/10 rounded-full px-4 py-2 mb-8 transition-all duration-700 ${
         visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"
         }`}>
         <Shield className="h-4 w-4 text-primary" />
         <span className="text-sm font-medium text-primary">AI-Powered Disaster Prevention</span>
-        </div>
+        </div> */}
 
         {/* Heading */}
         <h1 className={`text-4xl md:text-6xl lg:text-7xl font-bold mb-6 transition-all duration-700 ${

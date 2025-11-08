@@ -18,6 +18,11 @@ interface ArduinoSensorData {
       y: number;
       z: number;
     };
+    gyroscope?: {
+      x: number;
+      y: number;
+      z: number;
+    };
   };
   system: {
     uptime: number;
@@ -30,16 +35,7 @@ interface ArduinoSensorData {
 function FallbackBridge({ sensorData }: { sensorData: ArduinoSensorData }) {
   const groupRef = useRef<THREE.Group>(null!);
 
-  // Animate vibration
-  useFrame((state) => {
-    if (groupRef.current) {
-      // Simple vibration animation
-      groupRef.current.position.y = Math.sin(state.clock.elapsedTime * 2) * sensorData.sensors.vibration * 0.05;
-      
-      // Slight rotation based on strain
-      groupRef.current.rotation.z = Math.sin(state.clock.elapsedTime * 0.5) * (sensorData.sensors.strain / 5000) * 0.1;
-    }
-  });
+  // Animation disabled - bridge is static
 
   // Determine color based on strain
   const getColor = (): string => {
@@ -114,22 +110,7 @@ function CADModelBridge({ sensorData }: { sensorData: ArduinoSensorData }) {
     }
   }, [gltf]);
 
-  // Animate vibration
-  useFrame((state) => {
-    if (groupRef.current) {
-      // Vibration animation based on real sensor data
-      groupRef.current.position.y = Math.sin(state.clock.elapsedTime * 2) * sensorData.sensors.vibration * 0.02;
-      
-      // Slight rotation based on strain (more subtle for CAD models)
-      groupRef.current.rotation.z = Math.sin(state.clock.elapsedTime * 0.5) * (sensorData.sensors.strain / 8000) * 0.05;
-      
-      // Add accelerometer-based movement if available
-      if (sensorData.sensors.accelerometer.x !== 0 || sensorData.sensors.accelerometer.y !== 0) {
-        groupRef.current.rotation.x = sensorData.sensors.accelerometer.x * 0.01;
-        groupRef.current.rotation.y = sensorData.sensors.accelerometer.y * 0.01;
-      }
-    }
-  });
+  // Animation disabled - bridge is static
 
   // Update material colors based on strain
   useEffect(() => {
@@ -257,6 +238,79 @@ function LoadingSpinner() {
   );
 }
 
+// Individual Graph Component
+interface GraphProps {
+  title: string;
+  data: number[];
+  color: string;
+  unit: string;
+  currentValue: number;
+}
+
+function SensorGraph({ title, data, color, unit, currentValue }: GraphProps) {
+  // Ensure we have at least 2 data points for proper rendering
+  const displayData = data.length < 2 ? [...data, currentValue] : data;
+  const maxValue = Math.max(...displayData, Math.abs(Math.min(...displayData)), 1);
+  const minValue = Math.min(...displayData, -maxValue);
+  const range = maxValue - minValue || 1;
+  
+  return (
+    <div style={{
+      background: "rgba(0, 0, 0, 0.6)",
+      backdropFilter: "blur(10px)",
+      borderRadius: "6px",
+      padding: "8px",
+      border: "1px solid rgba(255, 255, 255, 0.1)",
+      display: "flex",
+      flexDirection: "column" as const,
+      height: "100%"
+    }}>
+      <div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: "6px"
+      }}>
+        <h4 style={{ margin: 0, fontSize: "11px", color: color, fontWeight: "600" }}>
+          {title}
+        </h4>
+        <span style={{ fontSize: "11px", fontWeight: "bold", color: "white" }}>
+          {currentValue.toFixed(2)} {unit}
+        </span>
+      </div>
+      <div style={{
+        flex: 1,
+        background: "rgba(255, 255, 255, 0.05)",
+        borderRadius: "4px",
+        position: "relative" as const,
+        overflow: "hidden",
+        minHeight: "60px"
+      }}>
+        <svg width="100%" height="100%" style={{ position: "absolute" as const }} viewBox="0 0 100 100" preserveAspectRatio="none">
+          {/* Grid lines */}
+          <line x1="0" y1="50" x2="100" y2="50" stroke="rgba(255,255,255,0.1)" strokeWidth="0.5" vectorEffect="non-scaling-stroke" />
+          
+          {/* Data line */}
+          {displayData.length > 0 && (
+            <polyline
+              points={displayData.map((value, index) => {
+                const x = displayData.length === 1 ? 50 : (index / (displayData.length - 1)) * 100;
+                const normalizedValue = ((value - minValue) / range);
+                const y = 100 - (normalizedValue * 100);
+                return `${x},${y}`;
+              }).join(" ")}
+              fill="none"
+              stroke={color}
+              strokeWidth="1"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
 // Main Arduino Simulation Component
 const ArduinoSimulation: React.FC = () => {
   const [sensorData, setSensorData] = useState<ArduinoSensorData>({
@@ -268,7 +322,8 @@ const ArduinoSimulation: React.FC = () => {
       strain: 236,
       vibration: 122,
       temperature: 32,
-      accelerometer: { x: 0, y: 0, z: 0 }
+      accelerometer: { x: 0, y: 0, z: 0 },
+      gyroscope: { x: 0, y: 0, z: 0 }
     },
     system: {
       uptime: 0,
@@ -282,6 +337,18 @@ const ArduinoSimulation: React.FC = () => {
   const [dataHistory, setDataHistory] = useState<ArduinoSensorData[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const simulationIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [useSimulation, setUseSimulation] = useState(false);
+  const [arduinoIP, setArduinoIP] = useState<string>('');
+  const [useArduino, setUseArduino] = useState(false);
+  
+  // Graph data history (keep last 50 points)
+  const [accelXHistory, setAccelXHistory] = useState<number[]>([]);
+  const [accelYHistory, setAccelYHistory] = useState<number[]>([]);
+  const [accelZHistory, setAccelZHistory] = useState<number[]>([]);
+  const [gyroXHistory, setGyroXHistory] = useState<number[]>([]);
+  const [gyroYHistory, setGyroYHistory] = useState<number[]>([]);
+  const [gyroZHistory, setGyroZHistory] = useState<number[]>([]);
 
   // WebSocket connection to backend
   const initWebSocket = () => {
@@ -310,6 +377,15 @@ const ArduinoSimulation: React.FC = () => {
             const newHistory = [...prev, data].slice(-50);
             return newHistory;
           });
+          
+          // Update graph histories
+          const maxPoints = 50;
+          setAccelXHistory(prev => [...prev, data.sensors.accelerometer.x].slice(-maxPoints));
+          setAccelYHistory(prev => [...prev, data.sensors.accelerometer.y].slice(-maxPoints));
+          setAccelZHistory(prev => [...prev, data.sensors.accelerometer.z].slice(-maxPoints));
+          setGyroXHistory(prev => [...prev, data.sensors.gyroscope?.x || 0].slice(-maxPoints));
+          setGyroYHistory(prev => [...prev, data.sensors.gyroscope?.y || 0].slice(-maxPoints));
+          setGyroZHistory(prev => [...prev, data.sensors.gyroscope?.z || 0].slice(-maxPoints));
           
           console.log('📊 Arduino Data:', {
             strain: data.sensors.strain,
@@ -363,6 +439,68 @@ const ArduinoSimulation: React.FC = () => {
     }
   };
 
+  // Fetch data from ESP32 Arduino
+  const fetchArduinoData = async () => {
+    if (!arduinoIP) return;
+    
+    try {
+      const response = await fetch(`http://${arduinoIP}`);
+      if (response.ok) {
+        const espData = await response.json();
+        
+        // Map ESP32 data format to our interface
+        const mappedData: ArduinoSensorData = {
+          infrastructure_id: "ESP32_MPU6050",
+          location: `Arduino @ ${arduinoIP}`,
+          timestamp: Date.now(),
+          status: 'normal',
+          sensors: {
+            strain: Math.abs(espData.ax * 100), // Derive strain from acceleration
+            vibration: Math.sqrt(espData.gx**2 + espData.gy**2 + espData.gz**2), // Magnitude of gyro
+            temperature: 25, // Not available from MPU6050
+            accelerometer: {
+              x: espData.ax || 0,
+              y: espData.ay || 0,
+              z: espData.az || 0
+            },
+            gyroscope: {
+              x: espData.gx || 0,
+              y: espData.gy || 0,
+              z: espData.gz || 0
+            }
+          },
+          system: {
+            uptime: Math.floor(Date.now() / 1000),
+            free_memory: 0,
+            battery_level: 100
+          }
+        };
+        
+        setSensorData(mappedData);
+        setConnectionStatus('connected');
+        setError(null);
+        
+        // Update graph histories
+        const maxPoints = 50;
+        setAccelXHistory(prev => [...prev, mappedData.sensors.accelerometer.x].slice(-maxPoints));
+        setAccelYHistory(prev => [...prev, mappedData.sensors.accelerometer.y].slice(-maxPoints));
+        setAccelZHistory(prev => [...prev, mappedData.sensors.accelerometer.z].slice(-maxPoints));
+        setGyroXHistory(prev => [...prev, mappedData.sensors.gyroscope?.x || 0].slice(-maxPoints));
+        setGyroYHistory(prev => [...prev, mappedData.sensors.gyroscope?.y || 0].slice(-maxPoints));
+        setGyroZHistory(prev => [...prev, mappedData.sensors.gyroscope?.z || 0].slice(-maxPoints));
+        
+        setDataHistory(prev => [...prev, mappedData].slice(-50));
+        
+      } else {
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (err) {
+      console.error('Error fetching Arduino data:', err);
+      setError(`Unable to connect to Arduino at ${arduinoIP}`);
+      setConnectionStatus('disconnected');
+    }
+  };
+
   // Polling fallback for when WebSocket fails
   const fetchData = async () => {
     try {
@@ -380,6 +518,208 @@ const ArduinoSimulation: React.FC = () => {
       setError('Unable to fetch sensor data');
       setConnectionStatus('disconnected');
     }
+  };
+
+  // Generate random sensor data for simulation
+  const generateRandomSensorData = (): ArduinoSensorData => {
+    const baseAccel = {
+      x: Math.sin(Date.now() / 1000) * 2 + (Math.random() - 0.5) * 0.5,
+      y: Math.cos(Date.now() / 1000) * 1.5 + (Math.random() - 0.5) * 0.3,
+      z: 9.8 + (Math.random() - 0.5) * 0.2
+    };
+
+    const baseGyro = {
+      x: Math.sin(Date.now() / 2000) * 15 + (Math.random() - 0.5) * 5,
+      y: Math.cos(Date.now() / 2000) * 12 + (Math.random() - 0.5) * 4,
+      z: Math.sin(Date.now() / 3000) * 8 + (Math.random() - 0.5) * 3
+    };
+
+    const strain = 200 + Math.sin(Date.now() / 5000) * 800 + Math.random() * 100;
+    const vibration = 100 + Math.sin(Date.now() / 3000) * 50 + Math.random() * 20;
+    const temperature = 28 + Math.sin(Date.now() / 10000) * 5 + Math.random() * 2;
+
+    return {
+      infrastructure_id: "BRIDGE_001",
+      location: "Test Bridge (Simulated Data)",
+      timestamp: Date.now(),
+      status: strain > 800 ? 'warning' : strain > 1000 ? 'critical' : 'normal',
+      sensors: {
+        strain,
+        vibration,
+        temperature,
+        accelerometer: baseAccel,
+        gyroscope: baseGyro
+      },
+      system: {
+        uptime: Math.floor(Date.now() / 1000),
+        free_memory: 1500 + Math.floor(Math.random() * 100),
+        battery_level: 85 + Math.floor(Math.random() * 15)
+      }
+    };
+  };
+
+  // Start simulation mode
+  const startSimulation = () => {
+    console.log('🎮 Starting simulation mode with random data');
+    setUseSimulation(true);
+    setConnectionStatus('connected');
+    setError(null);
+
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+
+    const initialData = generateRandomSensorData();
+    setSensorData(initialData);
+
+    simulationIntervalRef.current = setInterval(() => {
+      const data = generateRandomSensorData();
+      setSensorData(data);
+      
+      const maxPoints = 50;
+      setAccelXHistory(prev => [...prev, data.sensors.accelerometer.x].slice(-maxPoints));
+      setAccelYHistory(prev => [...prev, data.sensors.accelerometer.y].slice(-maxPoints));
+      setAccelZHistory(prev => [...prev, data.sensors.accelerometer.z].slice(-maxPoints));
+      setGyroXHistory(prev => [...prev, data.sensors.gyroscope?.x || 0].slice(-maxPoints));
+      setGyroYHistory(prev => [...prev, data.sensors.gyroscope?.y || 0].slice(-maxPoints));
+      setGyroZHistory(prev => [...prev, data.sensors.gyroscope?.z || 0].slice(-maxPoints));
+      
+      setDataHistory(prev => [...prev, data].slice(-50));
+    }, 100);
+  };
+
+  // Stop simulation mode
+  const stopSimulation = () => {
+    console.log('⏹️ Stopping simulation mode');
+    setUseSimulation(false);
+    if (simulationIntervalRef.current) {
+      clearInterval(simulationIntervalRef.current);
+      simulationIntervalRef.current = null;
+    }
+    initWebSocket();
+  };
+
+  // Start Arduino connection
+  const startArduinoConnection = (ip: string) => {
+    console.log('🔌 Connecting to Arduino at', ip);
+    setArduinoIP(ip);
+    setUseArduino(true);
+    setUseSimulation(false);
+    setConnectionStatus('connecting');
+    setError(null);
+    
+    // Clear other intervals
+    if (simulationIntervalRef.current) {
+      clearInterval(simulationIntervalRef.current);
+      simulationIntervalRef.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+    }
+    
+    // Function to fetch with the IP (try both endpoints)
+    const fetchWithIP = async () => {
+      try {
+        // Try root endpoint first, then /data endpoint
+        console.log(`🔄 Fetching data from http://${ip}`);
+        let response = await fetch(`http://${ip}`, {
+          method: 'GET',
+          mode: 'cors',
+          headers: {
+            'Accept': 'application/json',
+          },
+        });
+        
+        console.log('Response status:', response.status);
+        
+        // Check if response is JSON
+        const contentType = response.headers.get('content-type');
+        if (!contentType?.includes('application/json')) {
+          // Root returns HTML, try /data endpoint instead
+          console.log('🔄 Root endpoint returned HTML, trying /data...');
+          response = await fetch(`http://${ip}/data`, {
+            method: 'GET',
+            mode: 'cors',
+            headers: {
+              'Accept': 'application/json',
+            },
+          });
+        }
+        
+        if (response.ok) {
+          const espData = await response.json();
+          console.log('✅ Received Arduino data:', espData);
+          
+          const mappedData: ArduinoSensorData = {
+            infrastructure_id: "ESP32_MPU6050",
+            location: `Arduino @ ${ip}`,
+            timestamp: Date.now(),
+            status: 'normal',
+            sensors: {
+              strain: Math.abs(espData.ax * 100),
+              vibration: Math.sqrt(espData.gx**2 + espData.gy**2 + espData.gz**2),
+              temperature: 25,
+              accelerometer: {
+                x: espData.ax || 0,
+                y: espData.ay || 0,
+                z: espData.az || 0
+              },
+              gyroscope: {
+                x: espData.gx || 0,
+                y: espData.gy || 0,
+                z: espData.gz || 0
+              }
+            },
+            system: {
+              uptime: Math.floor(Date.now() / 1000),
+              free_memory: 0,
+              battery_level: 100
+            }
+          };
+          
+          setSensorData(mappedData);
+          setConnectionStatus('connected');
+          setError(null);
+          
+          const maxPoints = 50;
+          setAccelXHistory(prev => [...prev, mappedData.sensors.accelerometer.x].slice(-maxPoints));
+          setAccelYHistory(prev => [...prev, mappedData.sensors.accelerometer.y].slice(-maxPoints));
+          setAccelZHistory(prev => [...prev, mappedData.sensors.accelerometer.z].slice(-maxPoints));
+          setGyroXHistory(prev => [...prev, mappedData.sensors.gyroscope?.x || 0].slice(-maxPoints));
+          setGyroYHistory(prev => [...prev, mappedData.sensors.gyroscope?.y || 0].slice(-maxPoints));
+          setGyroZHistory(prev => [...prev, mappedData.sensors.gyroscope?.z || 0].slice(-maxPoints));
+          setDataHistory(prev => [...prev, mappedData].slice(-50));
+        } else {
+          throw new Error(`HTTP ${response.status}`);
+        }
+      } catch (err: any) {
+        console.error('❌ Error fetching Arduino data:', err);
+        const errorMsg = err.message || 'Network error';
+        setError(`Cannot connect to ${ip}: ${errorMsg}`);
+        setConnectionStatus('disconnected');
+      }
+    };
+    
+    // Start polling Arduino every 200ms
+    pollingIntervalRef.current = setInterval(fetchWithIP, 200);
+    
+    // Initial fetch
+    fetchWithIP();
+  };
+
+  // Stop Arduino connection
+  const stopArduinoConnection = () => {
+    console.log('⏹️ Stopping Arduino connection');
+    setUseArduino(false);
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    setConnectionStatus('disconnected');
   };
 
   // Arduino control functions
@@ -410,6 +750,13 @@ const ArduinoSimulation: React.FC = () => {
 
   // Initialize connection
   useEffect(() => {
+    // Auto-start simulation mode for testing
+    setTimeout(() => {
+      if (connectionStatus !== 'connected') {
+        startSimulation();
+      }
+    }, 2000);
+    
     initWebSocket();
     
     return () => {
@@ -418,6 +765,9 @@ const ArduinoSimulation: React.FC = () => {
       }
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
+      }
+      if (simulationIntervalRef.current) {
+        clearInterval(simulationIntervalRef.current);
       }
     };
   }, []);
@@ -438,8 +788,10 @@ const ArduinoSimulation: React.FC = () => {
       height: "100vh",
       background: "linear-gradient(135deg, #0f04f, #1a1a2f)",
       display: "flex",
+      flexDirection: "row" as const,
       position: "relative" as const,
       fontFamily: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
+      overflow: "hidden"
     }}>
       {/* CSS for spinner animation */}
       <style>{`
@@ -449,40 +801,198 @@ const ArduinoSimulation: React.FC = () => {
         }
       `}</style>
 
-      {/* Connection Status */}
+      {/* Connection Status with Simulation Toggle */}
       <div style={{
         position: "absolute" as const,
         top: "20px",
         left: "50%",
         transform: "translateX(-50%)",
-        background: connectionStatus === 'connected' ? "rgba(34, 197, 94, 0.8)" : 
-                   connectionStatus === 'connecting' ? "rgba(245, 158, 11, 0.8)" : "rgba(239, 68, 68, 0.8)",
+        background: useArduino ? "rgba(59, 130, 246, 0.4)" :
+                   useSimulation ? "rgba(15, 51, 234, 0.4)" :
+                   connectionStatus === 'connected' ? "rgba(34, 197, 94, 0.4)" : 
+                   connectionStatus === 'connecting' ? "rgba(245, 158, 11, 0.4)" : "rgba(239, 68, 68, 0.9)",
         color: "white",
-        padding: "8px 16px",
+        padding: "10px 20px",
         borderRadius: "8px",
-        fontSize: "12px",
-        zIndex: 1000
+        fontSize: "13px",
+        zIndex: 1000,
+        display: "flex",
+        alignItems: "center",
+        gap: "12px",
+        boxShadow: "0 4px 6px rgba(0,0,0,0.3)"
       }}>
-        🔗 IOT Node: {connectionStatus === 'connected' ? 'Connected' :
-                   connectionStatus === 'connecting' ? 'Connecting...' : 'Disconnected'}
+        <span style={{ fontWeight: "500" }}>
+          {useArduino ? ` Arduino: ${arduinoIP}` :
+           useSimulation ? ' Simulation Mode' :
+           connectionStatus === 'connected' ? '🔗 Connected' :
+           connectionStatus === 'connecting' ? '🔗 Connecting...' : '🔗 Disconnected'}
+        </span>
+        {useSimulation && (
+          <button
+            onClick={stopSimulation}
+            style={{
+              background: "rgba(255, 255, 255, 0.25)",
+              border: "1px solid rgba(255, 255, 255, 0.4)",
+              color: "white",
+              padding: "5px 12px",
+              borderRadius: "5px",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: "500"
+            }}
+          >
+            Stop
+          </button>
+        )}
+        {useArduino && (
+          <button
+            onClick={stopArduinoConnection}
+            style={{
+              background: "rgba(255, 255, 255, 0.25)",
+              border: "1px solid rgba(255, 255, 255, 0.4)",
+              color: "white",
+              padding: "5px 12px",
+              borderRadius: "5px",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: "500"
+            }}
+          >
+            Disconnect
+          </button>
+        )}
+        {!useSimulation && !useArduino && connectionStatus !== 'connected' && (
+          <button
+            onClick={startSimulation}
+            style={{
+              background: "rgba(147, 51, 234, 0.9)",
+              border: "1px solid rgba(147, 51, 234, 1)",
+              color: "white",
+              padding: "5px 12px",
+              borderRadius: "5px",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: "500"
+            }}
+          >
+            Simulate
+          </button>
+        )}
       </div>
 
-      {/* Error Display */}
+      {/* Arduino IP Input */}
+      {!useArduino && !useSimulation && (
+        <div style={{
+          position: "absolute" as const,
+          top: "70px",
+          left: "50%",
+          transform: "translateX(-50%)",
+          background: "rgba(0, 0, 0, 0.85)",
+          backdropFilter: "blur(10px)",
+          color: "white",
+          padding: "12px 20px",
+          borderRadius: "8px",
+          fontSize: "13px",
+          zIndex: 1000,
+          display: "flex",
+          alignItems: "center",
+          gap: "10px",
+          boxShadow: "0 4px 6px rgba(0,0,0,0.3)",
+          border: "1px solid rgba(255,255,255,0.1)"
+        }}>
+          <span style={{ fontSize: "12px", color: "#aaa" }}>Arduino IP:</span>
+          <input
+            type="text"
+            placeholder="192.168.x.x"
+            value={arduinoIP}
+            onChange={(e) => setArduinoIP(e.target.value)}
+            style={{
+              background: "rgba(255, 255, 255, 0.1)",
+              border: "1px solid rgba(255, 255, 255, 0.2)",
+              color: "white",
+              padding: "5px 10px",
+              borderRadius: "4px",
+              fontSize: "12px",
+              width: "130px",
+              outline: "none"
+            }}
+          />
+          <button
+            onClick={async () => {
+              if (!arduinoIP) return;
+              // Test connection first
+              try {
+                const response = await fetch(`http://${arduinoIP}`);
+                const data = await response.json();
+                console.log('✅ Test successful! Data:', data);
+                alert(`✅ Connection successful!\n\nReceived data:\nax: ${data.ax}\nay: ${data.ay}\naz: ${data.az}\ngx: ${data.gx}\ngy: ${data.gy}\ngz: ${data.gz}`);
+              } catch (err: any) {
+                console.error('❌ Test failed:', err);
+                alert(`❌ Connection failed!\n\nError: ${err.message}\n\nCheck browser console (F12) for details.`);
+              }
+            }}
+            disabled={!arduinoIP}
+            style={{
+              background: arduinoIP ? "rgba(34, 197, 94, 0.9)" : "rgba(100, 100, 100, 0.5)",
+              border: "1px solid rgba(34, 197, 94, 1)",
+              color: "white",
+              padding: "5px 12px",
+              borderRadius: "5px",
+              cursor: arduinoIP ? "pointer" : "not-allowed",
+              fontSize: "12px",
+              fontWeight: "500",
+              marginRight: "5px"
+            }}
+          >
+            Test
+          </button>
+          <button
+            onClick={() => arduinoIP && startArduinoConnection(arduinoIP)}
+            disabled={!arduinoIP}
+            style={{
+              background: arduinoIP ? "rgba(59, 130, 246, 0.9)" : "rgba(100, 100, 100, 0.5)",
+              border: "1px solid rgba(59, 130, 246, 1)",
+              color: "white",
+              padding: "5px 15px",
+              borderRadius: "5px",
+              cursor: arduinoIP ? "pointer" : "not-allowed",
+              fontSize: "12px",
+              fontWeight: "500"
+            }}
+          >
+            Connect
+          </button>
+        </div>
+      )}
+
+      {/*{/* Error Display 
       {error && (
         <div style={{
           position: "absolute" as const,
-          top: "60px",
+          top: "130px",
           left: "50%",
           transform: "translateX(-50%)",
-          background: "rgba(255, 0, 0, 0.8)",
+          background: "rgba(239, 68, 68, 0.95)",
           color: "white",
-          padding: "10px 20px",
+          padding: "12px 20px",
           borderRadius: "8px",
-          zIndex: 1000
+          zIndex: 1000,
+          maxWidth: "500px",
+          fontSize: "12px",
+          boxShadow: "0 4px 6px rgba(0,0,0,0.3)",
+          border: "1px solid rgba(255,255,255,0.2)"
         }}>
-          {error}
+          <div style={{ fontWeight: "bold", marginBottom: "5px" }}>⚠️ Connection Error</div>
+          <div>{error}</div>
+          <div style={{ marginTop: "8px", fontSize: "11px", opacity: 0.8 }}>
+            💡 Troubleshooting:
+            <br />• Check Arduino IP address (open http://{arduinoIP || '192.168.1.105'}/data in a new tab)
+            <br />• Both devices must be on same Wi-Fi network
+            <br />• Upload the arduino_with_cors.ino code to enable cross-origin requests
+            <br />• Check browser console (F12) for detailed errors
+          </div>
         </div>
-      )}
+      )}*/}
 
       {/* Arduino Controls */}
       {/* <div style={{
@@ -538,8 +1048,8 @@ const ArduinoSimulation: React.FC = () => {
         </button>
       </div> */}
 
-      {/* 3D Bridge Visualization */}
-      <div style={{ width: "100%", height: "100%", position: "relative" as const }}>
+      {/* Left Side: 3D Bridge Visualization - 70% */}
+      <div style={{ width: "70%", height: "100%", position: "relative" as const, borderRight: "1px solid rgba(255,255,255,0.1)" }}>
         <Suspense fallback={<LoadingSpinner />}>
           <Canvas 
             camera={{ position: [10, 6, 10], fov: 50 }}
@@ -565,65 +1075,8 @@ const ArduinoSimulation: React.FC = () => {
           </Canvas>
         </Suspense>
 
-        {/* HUD Overlay - Real Arduino Data */}
-        <div style={{
-          position: "absolute" as const,
-          bottom: 20,
-          left: 20,
-          padding: "15px 20px",
-          background: "rgba(0, 0, 0, 0.8)",
-          backdropFilter: "blur(10px)",
-          borderRadius: "12px",
-          color: "white",
-          fontFamily: "monospace",
-          border: "1px solid rgba(255, 255, 255, 0.1)",
-          minWidth: "320px"
-        }}>
-          <h3 style={{ margin: "0 0 15px 0", fontSize: "16px", color: "#4CAF50" }}>
-            🤖 Predictive Real Time Sensor Data
-          </h3>
-          <div style={{ fontSize: "12px", color: "#888", marginBottom: "10px" }}>
-            {sensorData.location} • ID: {sensorData.infrastructure_id}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginBottom: "10px" }}>
-            <div>
-              <p style={{ margin: "0 0 4px 0", color: "#aaa", fontSize: "12px" }}>Strain</p>
-              <p style={{ margin: 0, fontSize: "16px", fontWeight: "bold" }}>
-                {sensorData.sensors.strain.toFixed(1)} µε
-              </p>
-            </div>
-            <div>
-              <p style={{ margin: "0 0 4px 0", color: "#aaa", fontSize: "12px" }}>Vibration</p>
-              <p style={{ margin: 0, fontSize: "16px", fontWeight: "bold" }}>
-                {sensorData.sensors.vibration.toFixed(2)} Hz
-              </p>
-            </div>
-            <div>
-              <p style={{ margin: "0 0 4px 0", color: "#aaa", fontSize: "12px" }}>Temperature</p>
-              <p style={{ margin: 0, fontSize: "16px", fontWeight: "bold" }}>
-                {sensorData.sensors.temperature.toFixed(1)} °C
-              </p>
-            </div>
-            <div>
-              <p style={{ margin: "0 0 4px 0", color: "#aaa", fontSize: "12px" }}>Status</p>
-              <p style={{ margin: 0, fontSize: "14px", fontWeight: "bold", color: statusInfo.color }}>
-                {statusInfo.text}
-              </p>
-            </div>
-          </div>
-          
-          {/* System Info */}
-          <div style={{ borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: "10px", fontSize: "11px", color: "#888" }}>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              {/* <span>Uptime: {Math.floor(sensorData.system.uptime / 60)}m</span>
-              <span>Memory: {sensorData.system.free_memory}B</span> */}
-              <span>Battery: {sensorData.system.battery_level}%</span>
-            </div>
-            <div style={{ marginTop: "5px" }}>
-              Last Update: {new Date(sensorData.timestamp).toLocaleTimeString()}
-            </div>
-          </div>
-        </div>
+      {/* Bridge Health Status + Statistics (from FastAPI) */}
+        <BridgeHealthPanel />
 
         {/* Data History Chart */}
         {/* {dataHistory.length > 5 && (
@@ -675,11 +1128,82 @@ const ArduinoSimulation: React.FC = () => {
           zIndex: 100
         }}>
           <h1 style={{ margin: 0, fontSize: "24px", fontWeight: "300", letterSpacing: "1px" }}>
-            🤖 BIM Simulation
+             BIM Simulation
           </h1>
           <p style={{ margin: "5px 0 0 0", fontSize: "14px", color: "#aaa" }}>
             Real-time data from integrated sensors
           </p>
+        </div>
+      </div>
+
+      {/* Right Side: 6 Sensor Graphs - 30% */}
+      <div style={{
+        width: "30%",
+        height: "100%",
+        padding: "15px",
+        overflowY: "auto" as const,
+        display: "flex",
+        flexDirection: "column" as const
+      }}>
+        {/* Header */}
+        <div style={{ marginBottom: "12px", marginTop: "40px" }}>
+          <h2 style={{ margin: 0, fontSize: "16px", color: "white", fontWeight: "300" }}>
+             Sensor Graphs
+          </h2>
+          <p style={{ margin: "3px 0 0 0", fontSize: "11px", color: "#aaa" }}>
+            Accelerometer & Gyroscope
+          </p>
+        </div>
+
+        {/* Graphs Grid */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "1fr",
+          gap: "10px",
+          flex: 1
+        }}>
+          <SensorGraph
+            title="Accelerometer X-Axis"
+            data={accelXHistory}
+            color="#FF6B6B"
+            unit="m/s²"
+            currentValue={sensorData.sensors.accelerometer.x}
+          />
+          <SensorGraph
+            title="Accelerometer Y-Axis"
+            data={accelYHistory}
+            color="#4ECDC4"
+            unit="m/s²"
+            currentValue={sensorData.sensors.accelerometer.y}
+          />
+          <SensorGraph
+            title="Accelerometer Z-Axis"
+            data={accelZHistory}
+            color="#45B7D1"
+            unit="m/s²"
+            currentValue={sensorData.sensors.accelerometer.z}
+          />
+          <SensorGraph
+            title="Gyroscope X-Axis"
+            data={gyroXHistory}
+            color="#FFA07A"
+            unit="°/s"
+            currentValue={sensorData.sensors.gyroscope?.x || 0}
+          />
+          <SensorGraph
+            title="Gyroscope Y-Axis"
+            data={gyroYHistory}
+            color="#98D8C8"
+            unit="°/s"
+            currentValue={sensorData.sensors.gyroscope?.y || 0}
+          />
+          <SensorGraph
+            title="Gyroscope Z-Axis"
+            data={gyroZHistory}
+            color="#F7DC6F"
+            unit="°/s"
+            currentValue={sensorData.sensors.gyroscope?.z || 0}
+          />
         </div>
       </div>
     </div>
@@ -688,5 +1212,131 @@ const ArduinoSimulation: React.FC = () => {
 
 // Preload the GLTF model
 useGLTF.preload("/bridge.glb");
+
+// --- Bridge Health Panel (uses FastAPI /stats) ---
+interface BridgeApiHealth {
+  status: string;
+  model: string;
+}
+interface BridgeApiStats {
+  total_predictions: number;
+  health_state_counts: Record<string, number>;
+  avg_confidence: number; // 0..1
+  avg_risk: number;       // 0..1
+}
+
+function BridgeHealthPanel() {
+  const [stats, setStats] = useState<BridgeApiStats | null>(null);
+  const [health, setHealth] = useState<BridgeApiHealth | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    const fetchStats = async () => {
+      try {
+        const h = await fetch("http://localhost:8000/health");
+        if (!h.ok) throw new Error("FastAPI not healthy");
+        setHealth(await h.json());
+        const res = await fetch("http://localhost:8000/stats");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        setStats(data);
+        setError(null);
+      } catch (e: any) {
+        setError(e.message || "Cannot reach FastAPI");
+      }
+    };
+    fetchStats();
+    timer = setInterval(fetchStats, 2000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Values from API (fallback to 0 when missing)
+  const avgRisk = stats?.avg_risk ?? 0;
+  const avgConf = stats?.avg_confidence ?? 0;
+  const total = stats?.total_predictions ?? 0;
+  const critical = stats?.health_state_counts?.CRITICAL_STRESS ?? 0;
+  const anomalyRate = total ? (critical / total) * 100 : 0;
+
+  let statusTitle = "NORMAL";
+  let riskLevel = "Low";
+  let statusColor = "#22c55e"; // green
+  if (avgRisk >= 0.5 || anomalyRate >= 5) {
+    statusTitle = "ELEVATED STRESS";
+    riskLevel = "Medium";
+    statusColor = "#f59e0b"; // amber
+  }
+  if (avgRisk >= 0.8 || anomalyRate >= 10) {
+    statusTitle = "CRITICAL STRESS";
+    riskLevel = "High";
+    statusColor = "#ef4444"; // red
+  }
+
+  const meterPct = Math.round(Math.min(Math.max(avgRisk, 0), 1) * 100);
+
+  return (
+    <div style={{ position: "absolute" as const, top: 20, right: 20, width: 360, zIndex: 200 }}>
+      {/* Bridge Health Status Card */}
+      <div style={{
+        background: "rgba(0,0,0,0.85)", border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: 12, color: "#fff", padding: 16, marginBottom: 14,
+        boxShadow: "0 10px 25px rgba(0,0,0,0.35)"
+      }}>
+        <div style={{ color: "#22d3ee", fontWeight: 700, marginBottom: 8 }}>
+          🧱 Bridge Health Status
+        </div>
+        <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 6 }}>{health?.model || "Model"}</div>
+        <div style={{ fontSize: 26, fontWeight: 800, marginBottom: 10 }}>
+          {statusTitle}
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 4 }}>Risk Level: <span style={{ color: statusColor, fontWeight: 700 }}>{riskLevel}</span></div>
+        <div style={{ fontSize: 13, marginBottom: 4 }}>Confidence: <span style={{ color: "#22c55e", fontWeight: 700 }}>{(avgConf*100).toFixed(1)}%</span></div>
+        <div style={{ fontSize: 13, marginBottom: 8 }}>Risk Score: <span style={{ color: "#93c5fd", fontWeight: 700 }}>{avgRisk.toFixed(2)}</span></div>
+        <div style={{ fontSize: 12, color: "#bbb", marginBottom: 10 }}>
+          {anomalyRate >= 10 ? "Critical stress, frequent anomalies detected" :
+           anomalyRate >= 5 ? "Elevated stress, intermittent anomalies observed" :
+           "Structure operating within normal parameters"}
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6, color: "#22c55e" }}>Risk Meter</div>
+        <div style={{ height: 14, width: "100%", background: "rgba(255,255,255,0.08)", borderRadius: 20, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" }}>
+          <div style={{
+            width: `${meterPct}%`, height: "100%",
+            background: "linear-gradient(90deg, #22c55e, #eab308, #ef4444)",
+            transition: "width 0.4s ease"
+          }} />
+        </div>
+      </div>
+
+      {/* Statistics Card */}
+      <div style={{
+        background: "rgba(0,0,0,0.85)", border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: 12, color: "#fff", padding: 16,
+        boxShadow: "0 10px 25px rgba(0,0,0,0.35)"
+      }}>
+        <div style={{ color: "#34d399", fontWeight: 700, marginBottom: 10 }}>
+          📊 Statistics
+        </div>
+        {!stats && !error && <div style={{ color: "#bbb", fontSize: 12 }}>Connecting to FastAPI...</div>}
+        {error && <div style={{ color: "#f88", fontSize: 12 }}>FastAPI error: {error}</div>}
+        {stats && (
+          <div style={{ display: "grid", gap: 8, fontSize: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: "#aaa" }}>Total Predictions:</span>
+              <span style={{ fontWeight: 700 }}>{total.toLocaleString()}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: "#aaa" }}>Avg Confidence:</span>
+              <span style={{ fontWeight: 700 }}>{(avgConf*100).toFixed(1)}%</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <span style={{ color: "#aaa" }}>Avg Risk:</span>
+              <span style={{ fontWeight: 700 }}>{avgRisk.toFixed(2)}</span>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default ArduinoSimulation;

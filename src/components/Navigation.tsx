@@ -11,7 +11,7 @@ const Navigation = () => {
     { name: "Dashboard", href: "/dashboard" },
     { name: "Simulation", href: "/arduino" },
     { name: "Features", href: "#features" },
-    { name: "Team", href: "#team" },
+    // { name: "Team", href: "#team" },
     { name: "Contact", href: "#contact" },
   ];
 

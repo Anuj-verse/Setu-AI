@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Bridge Health Monitoring Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0a0a0a; color: #fff; overflow: hidden; }
+    #container { display: flex; height: 100vh; }
+
+    #bim-view { flex: 2; position: relative; }
+    #sidebar {
+      flex: 1; background: #141414; padding: 20px; overflow-y: auto;
+      border-left: 1px solid #222;
+    }
+
+    h2 { color: #00ffcc; margin-bottom: 10px; }
+    .status-card {
+      background: linear-gradient(135deg, #1e1e1e, #2a2a2a);
+      border-radius: 12px; padding: 20px; margin-bottom: 20px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      transition: border 0.3s;
+    }
+    .health-state { font-size: 2em; font-weight: bold; margin-bottom: 10px; }
+    .metric { margin: 8px 0; font-size: 1.05em; }
+    .metric span { color: #00ffcc; font-weight: bold; }
+    canvas { background: #1a1a1a; border-radius: 10px; margin-top: 15px; }
+    .risk-meter {
+      height: 25px; background: #1a1a1a; border-radius: 15px;
+      overflow: hidden; margin-top: 10px;
+    }
+    .risk-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #00ff88, #ffff00, #ff4444);
+      width: 10%; border-radius: 15px;
+      transition: width 0.6s ease;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="bim-view"></div>
+    <div id="sidebar">
+      <div id="status-card" class="status-card">
+        <h2>🌉 Bridge Health Status</h2>
+        <div class="health-state" id="health-state">LOADING...</div>
+        <div class="metric">Risk Level: <span id="risk-level">--</span></div>
+        <div class="metric">Degradation Score: <span id="degradation">--</span></div>
+        <div class="metric">Forecast (Next 30d): <span id="forecast">--</span></div>
+        <div class="metric">Confidence: <span id="confidence">--</span></div>
+        <div class="metric" id="description" style="margin-top:10px; color:#aaa;"></div>
+        <h3 style="margin-top:10px; color:#00ffcc;">Risk Meter</h3>
+        <div class="risk-meter"><div class="risk-fill" id="risk-fill"></div></div>
+      </div>
+
+      <div class="status-card">
+        <h2>📈 Score Trends</h2>
+        <canvas id="trendChart" width="400" height="200"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ==============================
+    // 3D Bridge Visualization
+    // ==============================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0a0a);
+    const container = document.getElementById('bim-view');
+    const camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(renderer.domElement);
+
+    // Geometry
+    const pillarGeo = new THREE.CylinderGeometry(0.3, 0.3, 3, 32);
+    const pillarMat = new THREE.MeshPhongMaterial({ color: 0x555555 });
+    const p1 = new THREE.Mesh(pillarGeo, pillarMat); p1.position.set(-3,0,0);
+    const p2 = new THREE.Mesh(pillarGeo, pillarMat); p2.position.set(3,0,0);
+    scene.add(p1); scene.add(p2);
+
+    const bridgeGeo = new THREE.BoxGeometry(8, 0.4, 1.2);
+    const bridgeMat = new THREE.MeshPhongMaterial({ color: 0x00ff88 });
+    const bridge = new THREE.Mesh(bridgeGeo, bridgeMat);
+    bridge.position.y = 1.75; scene.add(bridge);
+
+    // Lighting
+    const light = new THREE.DirectionalLight(0xffffff, 1); light.position.set(5,5,5);
+    scene.add(new THREE.AmbientLight(0xffffff,0.4)); scene.add(light);
+
+    // Camera setup
+    camera.position.set(8,4,8);
+    camera.lookAt(0,1.5,0);
+
+    // ==============================
+    // Interactive Orbit Controls
+    // ==============================
+    let isDragging = false;
+    let previousMousePosition = { x: 0, y: 0 };
+    let cameraAngle = { theta: 0.7, phi: 0.5 };
+    const cameraDistance = 10;
+
+    container.addEventListener('mousedown', e => {
+      isDragging = true;
+      previousMousePosition = { x: e.clientX, y: e.clientY };
+    });
+    container.addEventListener('mouseup', () => isDragging = false);
+    container.addEventListener('mouseleave', () => isDragging = false);
+    container.addEventListener('mousemove', e => {
+      if (!isDragging) return;
+      const deltaX = e.clientX - previousMousePosition.x;
+      const deltaY = e.clientY - previousMousePosition.y;
+      cameraAngle.theta += deltaX * 0.005;
+      cameraAngle.phi -= deltaY * 0.005;
+      cameraAngle.phi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraAngle.phi));
+      previousMousePosition = { x: e.clientX, y: e.clientY };
+    });
+
+    // Touch for mobile
+    container.addEventListener('touchstart', e => {
+      if (e.touches.length === 1) {
+        isDragging = true;
+        previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      }
+    });
+    container.addEventListener('touchmove', e => {
+      if (!isDragging) return;
+      const deltaX = e.touches[0].clientX - previousMousePosition.x;
+      const deltaY = e.touches[0].clientY - previousMousePosition.y;
+      cameraAngle.theta += deltaX * 0.005;
+      cameraAngle.phi -= deltaY * 0.005;
+      cameraAngle.phi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraAngle.phi));
+      previousMousePosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      e.preventDefault();
+    });
+    container.addEventListener('touchend', () => isDragging = false);
+
+    function animate() {
+      requestAnimationFrame(animate);
+      camera.position.x = cameraDistance * Math.sin(cameraAngle.phi) * Math.cos(cameraAngle.theta);
+      camera.position.y = cameraDistance * Math.cos(cameraAngle.phi);
+      camera.position.z = cameraDistance * Math.sin(cameraAngle.phi) * Math.sin(cameraAngle.theta);
+      camera.lookAt(0,1.5,0);
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    // ==============================
+    // Chart.js for trend plotting
+    // ==============================
+    const ctx = document.getElementById('trendChart').getContext('2d');
+    const trendChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          { label: 'Degradation', borderColor: '#ff9900', data: [], tension: 0.3 },
+          { label: 'Forecast (30D)', borderColor: '#00ffcc', data: [], tension: 0.3 }
+        ]
+      },
+      options: { responsive: true, scales: { y: { beginAtZero: false } } }
+    });
+
+    // ==============================
+    // Fetch from API
+    // ==============================
+    async function fetchBridgeHealth() {
+      try {
+        const response = await fetch("http://127.0.0.1:8000/predict");
+        const data = await response.json();
+        updateDashboard(data);
+      } catch (err) {
+        console.error("Fetch error:", err);
+      }
+    }
+
+    function updateDashboard(data) {
+      document.getElementById('health-state').textContent = data.condition_label.replace('_',' ');
+      document.getElementById('risk-level').textContent = data.risk_level;
+      document.getElementById('confidence').textContent = (data.confidence * 100).toFixed(1) + "%";
+      document.getElementById('description').textContent = data.description;
+      document.getElementById('degradation').textContent = data.degradation_score.toFixed(2);
+      document.getElementById('forecast').textContent = data.forecast_score_next_30d.toFixed(2);
+
+      const riskFill = document.getElementById('risk-fill');
+      riskFill.style.width = (data.confidence * 100) + "%";
+      bridge.material.color.setHex(parseInt(data.color.replace("#", "0x")));
+
+      trendChart.data.labels.push(new Date(data.timestamp).toLocaleTimeString());
+      trendChart.data.datasets[0].data.push(data.degradation_score);
+      trendChart.data.datasets[1].data.push(data.forecast_score_next_30d);
+      if (trendChart.data.labels.length > 20) {
+        trendChart.data.labels.shift();
+        trendChart.data.datasets[0].data.shift();
+        trendChart.data.datasets[1].data.shift();
+      }
+      trendChart.update();
+    }
+
+    // Auto-refresh every 2.5s
+    setInterval(fetchBridgeHealth, 2500);
+    fetchBridgeHealth();
+
+    window.addEventListener('resize', () => {
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+<!-- <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Bridge Health Monitoring Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0a0a0a; color: #fff; overflow: hidden; }
+    #container { display: flex; height: 100vh; }
+
+    #bim-view { flex: 2; position: relative; }
+    #sidebar {
+      flex: 1; background: #141414; padding: 20px; overflow-y: auto;
+      border-left: 1px solid #222;
+    }
+
+    h2 { color: #00ffcc; margin-bottom: 10px; }
+    .status-card {
+      background: linear-gradient(135deg, #1e1e1e, #2a2a2a);
+      border-radius: 12px; padding: 20px; margin-bottom: 20px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      transition: border 0.3s;
+    }
+    .health-state { font-size: 2em; font-weight: bold; margin-bottom: 10px; }
+    .metric { margin: 8px 0; font-size: 1.05em; }
+    .metric span { color: #00ffcc; font-weight: bold; }
+    canvas { background: #1a1a1a; border-radius: 10px; margin-top: 15px; }
+    .risk-meter {
+      height: 25px; background: #1a1a1a; border-radius: 15px;
+      overflow: hidden; margin-top: 10px;
+    }
+    .risk-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #00ff88, #ffff00, #ff4444);
+      width: 10%; border-radius: 15px;
+      transition: width 0.6s ease;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="bim-view"></div>
+    <div id="sidebar">
+      <div id="status-card" class="status-card">
+        <h2>🌉 Bridge Health Status</h2>
+        <div class="health-state" id="health-state">LOADING...</div>
+        <div class="metric">Risk Level: <span id="risk-level">--</span></div>
+        <div class="metric">Degradation Score: <span id="degradation">--</span></div>
+        <div class="metric">Forecast (Next 30d): <span id="forecast">--</span></div>
+        <div class="metric">Confidence: <span id="confidence">--</span></div>
+        <div class="metric" id="description" style="margin-top:10px; color:#aaa;"></div>
+        <h3 style="margin-top:10px; color:#00ffcc;">Risk Meter</h3>
+        <div class="risk-meter"><div class="risk-fill" id="risk-fill"></div></div>
+      </div>
+
+      <div class="status-card">
+        <h2>📈 Score Trends</h2>
+        <canvas id="trendChart" width="400" height="200"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ==============================
+    // 3D Bridge Visualization
+    // ==============================
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0a0a);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth*0.65 / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth*0.65, window.innerHeight);
+    document.getElementById('bim-view').appendChild(renderer.domElement);
+
+    const pillarGeo = new THREE.CylinderGeometry(0.3, 0.3, 3, 32);
+    const pillarMat = new THREE.MeshPhongMaterial({ color: 0x555555 });
+    const p1 = new THREE.Mesh(pillarGeo, pillarMat); p1.position.set(-3,0,0);
+    const p2 = new THREE.Mesh(pillarGeo, pillarMat); p2.position.set(3,0,0);
+    scene.add(p1); scene.add(p2);
+
+    const bridgeGeo = new THREE.BoxGeometry(8, 0.4, 1.2);
+    const bridgeMat = new THREE.MeshPhongMaterial({ color: 0x00ff88 });
+    const bridge = new THREE.Mesh(bridgeGeo, bridgeMat);
+    bridge.position.y = 1.75; scene.add(bridge);
+
+    const light = new THREE.DirectionalLight(0xffffff, 1); light.position.set(5,5,5);
+    scene.add(new THREE.AmbientLight(0xffffff,0.4)); scene.add(light);
+    camera.position.set(7,4,7); camera.lookAt(0,1.5,0);
+    function animate(){ requestAnimationFrame(animate); renderer.render(scene,camera); }
+    animate();
+
+    // ==============================
+    // Chart.js for trend plotting
+    // ==============================
+    const ctx = document.getElementById('trendChart').getContext('2d');
+    const trendChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [
+          { label: 'Degradation', borderColor: '#ff9900', data: [], tension: 0.3 },
+          { label: 'Forecast (30D)', borderColor: '#00ffcc', data: [], tension: 0.3 }
+        ]
+      },
+      options: { responsive: true, scales: { y: { beginAtZero: false } } }
+    });
+
+    // ==============================
+    // Fetch from API
+    // ==============================
+    async function fetchBridgeHealth() {
+      try {
+        const response = await fetch("http://127.0.0.1:8000/predict");
+        const data = await response.json();
+        updateDashboard(data);
+      } catch (err) {
+        console.error("Fetch error:", err);
+      }
+    }
+
+    function updateDashboard(data) {
+      document.getElementById('health-state').textContent = data.condition_label.replace('_',' ');
+      document.getElementById('risk-level').textContent = data.risk_level;
+      document.getElementById('confidence').textContent = (data.confidence * 100).toFixed(1) + "%";
+      document.getElementById('description').textContent = data.description;
+      document.getElementById('degradation').textContent = data.degradation_score.toFixed(2);
+      document.getElementById('forecast').textContent = data.forecast_score_next_30d.toFixed(2);
+
+      const riskFill = document.getElementById('risk-fill');
+      riskFill.style.width = (data.confidence * 100) + "%";
+      bridge.material.color.setHex(parseInt(data.color.replace("#", "0x")));
+
+      trendChart.data.labels.push(new Date(data.timestamp).toLocaleTimeString());
+      trendChart.data.datasets[0].data.push(data.degradation_score);
+      trendChart.data.datasets[1].data.push(data.forecast_score_next_30d);
+      if (trendChart.data.labels.length > 20) {
+        trendChart.data.labels.shift();
+        trendChart.data.datasets[0].data.shift();
+        trendChart.data.datasets[1].data.shift();
+      }
+      trendChart.update();
+    }
+
+    // Auto-refresh every 2.5s
+    setInterval(fetchBridgeHealth, 2500);
+    fetchBridgeHealth();
+  </script>
+</body>
+</html>
+
+
+ -->
+
+
+
+
+
+
+
+
+
+
+
+
+
+<!-- <!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bridge Health Monitoring</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial; background: #0a0a0a; color: #fff; overflow: hidden; }
+        #container { display: flex; height: 100vh; }
+        #bim-view { flex: 2; position: relative; }
+        #sidebar { flex: 1; padding: 20px; overflow-y: auto; background: #141414; }
+        
+        .status-card { 
+            padding: 20px; 
+            background: linear-gradient(135deg, #1e1e1e 0%, #2a2a2a 100%);
+            border-radius: 15px; 
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            border-left: 5px solid #00ff88;
+            transition: border-color 0.3s;
+        }
+        
+        .status-card.normal { border-color: #00ff88; }
+        .status-card.monitoring { border-color: #00aaff; }
+        .status-card.minor { border-color: #ffff00; }
+        .status-card.moderate { border-color: #ff9900; }
+        .status-card.critical { border-color: #ff4444; }
+        
+        .health-state { 
+            font-size: 2em; 
+            font-weight: bold; 
+            margin: 10px 0; 
+        }
+        
+        .metric { margin: 10px 0; font-size: 1.1em; }
+        .metric span { color: #00ffcc; font-weight: bold; }
+        
+        canvas { background: #1a1a1a; border-radius: 10px; margin-top: 20px; }
+        h2 { color: #00ffcc; margin-bottom: 15px; }
+        
+        .risk-meter {
+            height: 30px;
+            background: #1a1a1a;
+            border-radius: 15px;
+            overflow: hidden;
+            margin: 15px 0;
+            position: relative;
+        }
+        
+        .risk-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff88 0%, #ffff00 50%, #ff4444 100%);
+            transition: width 0.5s ease;
+            border-radius: 15px;
+        }
+        
+        .state-counts {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .count-item {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .count-value {
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <div id="bim-view"></div>
+        <div id="sidebar">
+            <div id="status-card" class="status-card normal">
+                <h2>🌉 Bridge Health Status</h2>
+                <div class="health-state" id="health-state">NORMAL</div>
+                <div class="metric">Risk Level: <span id="risk-level">Low</span></div>
+                <div class="metric">Confidence: <span id="confidence">0%</span></div>
+                <div class="metric">Risk Score: <span id="risk-score">0.00</span></div>
+                <div class="metric" id="description" style="margin-top: 15px; font-style: italic; color: #aaa;">
+                    Structure stable, minimal vibration
+                </div>
+                
+                <h3 style="margin-top: 20px; color: #00ffcc;">Risk Meter</h3>
+                <div class="risk-meter">
+                    <div class="risk-fill" id="risk-fill" style="width: 10%"></div>
+                </div>
+            </div>
+            
+            <div class="status-card">
+                <h2>📊 Statistics</h2>
+                <div class="metric">Total Predictions: <span id="total-predictions">0</span></div>
+                <div class="metric">Avg Confidence: <span id="avg-confidence">0%</span></div>
+                <div class="metric">Avg Risk: <span id="avg-risk">0.00</span></div>
+            </div>
+            
+            <h2>📈 Health State Distribution</h2>
+            <canvas id="healthChart" width="400" height="200"></canvas>
+            
+            <h2 style="margin-top: 20px;">🔢 State Counts</h2>
+            <div class="state-counts" id="state-counts"></div>
+        </div>
+    </div>
+
+   <script>
+    // Three.js BIM Scene (Bridge)
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0a0a);
+    
+    const container = document.getElementById('bim-view');
+    const camera = new THREE.PerspectiveCamera(
+        75, 
+        container.clientWidth / container.clientHeight, 
+        0.1, 
+        1000
+    );
+    
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(renderer.domElement);
+    
+    // ========================================
+    // BRIDGE STRUCTURE (Fixed on Pillars)
+    // ========================================
+    
+    // Pillars (vertical supports)
+    const pillarGeometry = new THREE.CylinderGeometry(0.3, 0.3, 3, 32);
+    const pillarMaterial = new THREE.MeshPhongMaterial({ color: 0x555555 });
+    
+    const pillar1 = new THREE.Mesh(pillarGeometry, pillarMaterial);
+    pillar1.position.set(-3, 0, 0);  // Left pillar at origin height
+    scene.add(pillar1);
+    
+    const pillar2 = new THREE.Mesh(pillarGeometry, pillarMaterial);
+    pillar2.position.set(3, 0, 0);   // Right pillar at origin height
+    scene.add(pillar2);
+    
+    // Bridge deck (horizontal beam) - positioned ON TOP of pillars
+    const bridgeGeometry = new THREE.BoxGeometry(8, 0.5, 1.2);
+    const bridgeMaterial = new THREE.MeshPhongMaterial({ color: 0x00ff88 });
+    const bridge = new THREE.Mesh(bridgeGeometry, bridgeMaterial);
+    bridge.position.y = 1.75;  // Top of 3-unit pillars (1.5) + half bridge height (0.25)
+    scene.add(bridge);
+    
+    // Support beams under bridge (optional, for realism)
+    const supportGeometry = new THREE.BoxGeometry(0.2, 0.3, 1);
+    const supportMaterial = new THREE.MeshPhongMaterial({ color: 0x777777 });
+    
+    const support1 = new THREE.Mesh(supportGeometry, supportMaterial);
+    support1.position.set(-3, 1.5, 0);
+    scene.add(support1);
+    
+    const support2 = new THREE.Mesh(supportGeometry, supportMaterial);
+    support2.position.set(3, 1.5, 0);
+    scene.add(support2);
+    
+    // Grid floor (for reference)
+    const gridHelper = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
+    gridHelper.position.y = -1.5;
+    scene.add(gridHelper);
+    
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+    
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(5, 10, 7);
+    directionalLight.castShadow = true;
+    scene.add(directionalLight);
+    
+    // Point light for accent
+    const pointLight = new THREE.PointLight(0x00ffcc, 0.5, 50);
+    pointLight.position.set(0, 5, 5);
+    scene.add(pointLight);
+    
+    // Camera position
+    camera.position.set(6, 4, 8);
+    camera.lookAt(0, 1.5, 0);
+    
+    // ========================================
+    // INTERACTIVE CAMERA CONTROLS
+    // ========================================
+    
+    let isDragging = false;
+    let previousMousePosition = { x: 0, y: 0 };
+    let cameraAngle = { theta: 0.8, phi: 0.5 };
+    const cameraDistance = 12;
+    
+    // Mouse controls for rotation
+    container.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        previousMousePosition = { x: e.clientX, y: e.clientY };
+    });
+    
+    container.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            const deltaX = e.clientX - previousMousePosition.x;
+            const deltaY = e.clientY - previousMousePosition.y;
+            
+            cameraAngle.theta += deltaX * 0.005;
+            cameraAngle.phi += deltaY * 0.005;
+            
+            // Limit vertical rotation
+            cameraAngle.phi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraAngle.phi));
+            
+            previousMousePosition = { x: e.clientX, y: e.clientY };
+        }
+    });
+    
+    container.addEventListener('mouseup', () => {
+        isDragging = false;
+    });
+    
+    container.addEventListener('mouseleave', () => {
+        isDragging = false;
+    });
+    
+    // Touch controls for mobile
+    container.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 1) {
+            isDragging = true;
+            previousMousePosition = { 
+                x: e.touches[0].clientX, 
+                y: e.touches[0].clientY 
+            };
+        }
+    });
+    
+    container.addEventListener('touchmove', (e) => {
+        if (isDragging && e.touches.length === 1) {
+            const deltaX = e.touches[0].clientX - previousMousePosition.x;
+            const deltaY = e.touches[0].clientY - previousMousePosition.y;
+            
+            cameraAngle.theta += deltaX * 0.005;
+            cameraAngle.phi += deltaY * 0.005;
+            
+            cameraAngle.phi = Math.max(0.1, Math.min(Math.PI - 0.1, cameraAngle.phi));
+            
+            previousMousePosition = { 
+                x: e.touches[0].clientX, 
+                y: e.touches[0].clientY 
+            };
+            
+            e.preventDefault();
+        }
+    });
+    
+    container.addEventListener('touchend', () => {
+        isDragging = false;
+    });
+    
+    // Animation loop
+    function animate() {
+        requestAnimationFrame(animate);
+        
+        // Update camera position based on angle
+        camera.position.x = cameraDistance * Math.sin(cameraAngle.phi) * Math.cos(cameraAngle.theta);
+        camera.position.y = cameraDistance * Math.cos(cameraAngle.phi) + 1.5;
+        camera.position.z = cameraDistance * Math.sin(cameraAngle.phi) * Math.sin(cameraAngle.theta);
+        camera.lookAt(0, 1.5, 0);
+        
+        renderer.render(scene, camera);
+    }
+    animate();
+    
+    // ========================================
+    // CHART.JS & DATA FETCHING
+    // ========================================
+    
+    const ctx = document.getElementById('healthChart').getContext('2d');
+    
+    const chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['Normal', 'Monitoring', 'Minor Stress', 'Moderate', 'Critical'],
+            datasets: [{
+                label: 'Health State Count',
+                data: [0, 0, 0, 0, 0],
+                backgroundColor: ['#00ff88', '#00aaff', '#ffff00', '#ff9900', '#ff4444']
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: { beginAtZero: true }
+            }
+        }
+    });
+    
+    const stateColors = {
+        'NORMAL': '#00ff88',
+        'MONITORING': '#00aaff',
+        'MINOR_STRESS': '#ffff00',
+        'MODERATE_STRESS': '#ff9900',
+        'CRITICAL_STRESS': '#ff4444'
+    };
+    
+    const stateClasses = {
+        'NORMAL': 'normal',
+        'MONITORING': 'monitoring',
+        'MINOR_STRESS': 'minor',
+        'MODERATE_STRESS': 'moderate',
+        'CRITICAL_STRESS': 'critical'
+    };
+    
+    // Fetch latest prediction
+    async function fetchLatest() {
+        try {
+            const response = await fetch('http://localhost:8000/latest');
+            const data = await response.json();
+            
+            // Update status card
+            document.getElementById('health-state').textContent = data.health_state.replace('_', ' ');
+            document.getElementById('risk-level').textContent = data.risk_level;
+            document.getElementById('confidence').textContent = (data.confidence * 100).toFixed(1) + '%';
+            document.getElementById('risk-score').textContent = data.risk_score.toFixed(2);
+            document.getElementById('description').textContent = data.description;
+            
+            // Update risk meter
+            document.getElementById('risk-fill').style.width = (data.risk_score * 100) + '%';
+            
+            // Update card border color
+            const statusCard = document.getElementById('status-card');
+            statusCard.className = 'status-card ' + stateClasses[data.health_state];
+            
+            // Update bridge color with smooth transition
+            const color = stateColors[data.health_state];
+            bridge.material.color.setHex(parseInt(color.replace('#', '0x')));
+            
+        } catch (error) {
+            console.error('Fetch error:', error);
+        }
+    }
+    
+    // Fetch stats
+    async function fetchStats() {
+        try {
+            const response = await fetch('http://localhost:8000/stats');
+            const stats = await response.json();
+            
+            document.getElementById('total-predictions').textContent = stats.total_predictions;
+            document.getElementById('avg-confidence').textContent = (stats.avg_confidence * 100).toFixed(1) + '%';
+            document.getElementById('avg-risk').textContent = stats.avg_risk.toFixed(2);
+            
+            // Update chart
+            const states = ['NORMAL', 'MONITORING', 'MINOR_STRESS', 'MODERATE_STRESS', 'CRITICAL_STRESS'];
+            chart.data.datasets[0].data = states.map(s => stats.health_state_counts[s]);
+            chart.update('none');
+            
+            // Update state counts
+            const countsDiv = document.getElementById('state-counts');
+            countsDiv.innerHTML = '';
+            
+            for (const [state, count] of Object.entries(stats.health_state_counts)) {
+                const countItem = document.createElement('div');
+                countItem.className = 'count-item';
+                const color = stateColors[state];
+                countItem.innerHTML = `
+                    <div>${state.replace('_', ' ')}</div>
+                    <div class="count-value" style="color: ${color}">${count}</div>
+                `;
+                countsDiv.appendChild(countItem);
+            }
+            
+        } catch (error) {
+            console.error('Stats fetch error:', error);
+        }
+    }
+    
+    setInterval(() => {
+        fetchLatest();
+        fetchStats();
+    }, 2000);
+    
+    fetchLatest();
+    fetchStats();
+    
+    window.addEventListener('resize', () => {
+        camera.aspect = container.clientWidth / container.clientHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+</script>
+
+</body>
+</html> -->

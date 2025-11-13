@@ -30,11 +30,11 @@ const ContactSection = () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-12">
           {/* Contact Information */}
           <div>
-            <h3 className="text-2xl font-semibold mb-6 text-foreground">
+            <h3 className="text-2xl ml-40 font-semibold mb-6 text-foreground">
               Get in Touch
             </h3>
             
-            <div className="space-y-6 mb-8">
+            <div className="space-y-6 mb-2 ml-20">
               <div className="flex items-start space-x-4">
                 <div className="bg-primary/20 p-3 rounded-lg">
                   <Mail className="h-5 w-5 text-primary" />
@@ -72,7 +72,7 @@ const ContactSection = () => {
               </div>
             </div>
 
-            {/* Collaboration Partners */}
+            {/* Collaboration Partners
             <div>
               <h4 className="text-lg font-semibold mb-4 text-foreground">
                 Current Collaborations
@@ -113,8 +113,8 @@ const ContactSection = () => {
                     </div>
                   </CardContent>
                 </Card>
-              </div>
-            </div>
+              </div> */}
+            {/* </div> */}
           </div>
 
           {/* Contact Form */}

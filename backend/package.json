@@ -19,13 +19,17 @@
   "author": "Setu AI Team",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "ws": "^8.14.2",
-    "serialport": "^12.0.0"
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "install": "^0.13.0",
+    "nodemailer": "^6.10.1",
+    "serialport": "^12.0.0",
+    "twilio": "^4.23.0",
+    "ws": "^8.18.3"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.1.11"
   },
   "engines": {
     "node": ">=16.0.0"

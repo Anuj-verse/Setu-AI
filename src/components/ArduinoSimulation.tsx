@@ -2,6 +2,9 @@ import React, { useRef, useState, useEffect, Suspense } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
+import { useAuth } from "@/hooks/useAuth";
+import { Navigate } from 'react-router-dom';
+import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 // Define the sensor data type matching Arduino JSON format
 interface ArduinoSensorData {
@@ -32,13 +35,18 @@ interface ArduinoSensorData {
 }
 
 // Simple fallback bridge component using basic geometries
-function FallbackBridge({ sensorData }: { sensorData: ArduinoSensorData }) {
+function FallbackBridge({ sensorData, overrideColor }: { sensorData: ArduinoSensorData; overrideColor?: string }) {
+  const { user, userRole, signOut, loading } = useAuth();
   const groupRef = useRef<THREE.Group>(null!);
 
   // Animation disabled - bridge is static
 
-  // Determine color based on strain
+  if (!user) {
+      return <Navigate to="/auth" replace />;
+    }
+  // Determine color from FastAPI override first, then strain fallback
   const getColor = (): string => {
+    if (overrideColor) return overrideColor;
     if (sensorData.sensors.strain < 1000) return "#00ff00"; // Green
     if (sensorData.sensors.strain < 2000) return "#ffff00"; // Yellow
     return "#ff0000"; // Red
@@ -80,7 +88,7 @@ function FallbackBridge({ sensorData }: { sensorData: ArduinoSensorData }) {
 }
 
 // CAD Model Bridge Component
-function CADModelBridge({ sensorData }: { sensorData: ArduinoSensorData }) {
+function CADModelBridge({ sensorData, overrideColor }: { sensorData: ArduinoSensorData; overrideColor?: string }) {
   const groupRef = useRef<THREE.Group>(null!);
   const [error, setError] = useState<string | null>(null);
   const [modelLoaded, setModelLoaded] = useState(false);
@@ -117,7 +125,9 @@ function CADModelBridge({ sensorData }: { sensorData: ArduinoSensorData }) {
     if (!clonedScene) return;
 
     let color: THREE.Color;
-    if (sensorData.sensors.strain < 1000) {
+    if (overrideColor) {
+      color = new THREE.Color(overrideColor);
+    } else if (sensorData.sensors.strain < 1000) {
       color = new THREE.Color(0x00ff00); // Green
     } else if (sensorData.sensors.strain < 2000) {
       color = new THREE.Color(0xffff00); // Yellow
@@ -146,7 +156,7 @@ function CADModelBridge({ sensorData }: { sensorData: ArduinoSensorData }) {
         });
       }
     });
-  }, [sensorData.sensors.strain, clonedScene]);
+  }, [sensorData.sensors.strain, clonedScene, overrideColor]);
 
   // Show fallback if model failed to load
   if (error || !gltf || !clonedScene) {
@@ -161,7 +171,7 @@ function CADModelBridge({ sensorData }: { sensorData: ArduinoSensorData }) {
 }
 
 // Model Loader with error boundaries
-function ModelWithFallback({ sensorData }: { sensorData: ArduinoSensorData }) {
+function ModelWithFallback({ sensorData, overrideColor }: { sensorData: ArduinoSensorData; overrideColor?: string }) {
   const [useCAD, setUseCAD] = useState(true);
   const [loadError, setLoadError] = useState(false);
 
@@ -172,13 +182,13 @@ function ModelWithFallback({ sensorData }: { sensorData: ArduinoSensorData }) {
   };
 
   if (loadError || !useCAD) {
-    return <FallbackBridge sensorData={sensorData} />;
+    return <FallbackBridge sensorData={sensorData} overrideColor={overrideColor} />;
   }
 
   return (
     <Suspense fallback={<FallbackBridge sensorData={sensorData} />}>
       <ErrorBoundary onError={handleError}>
-        <CADModelBridge sensorData={sensorData} />
+        <CADModelBridge sensorData={sensorData} overrideColor={overrideColor} />
       </ErrorBoundary>
     </Suspense>
   );
@@ -335,6 +345,7 @@ const ArduinoSimulation: React.FC = () => {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [error, setError] = useState<string | null>(null);
   const [dataHistory, setDataHistory] = useState<ArduinoSensorData[]>([]);
+  const [bridgeColor, setBridgeColor] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const simulationIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -772,6 +783,29 @@ const ArduinoSimulation: React.FC = () => {
     };
   }, []);
 
+  // Poll FastAPI to determine bridge color (green/yellow/red)
+  useEffect(() => {
+    let t: NodeJS.Timeout;
+    const fetchHealth = async () => {
+      try {
+        const res = await fetch('http://127.0.0.1:8000/predict');
+        const data = await res.json();
+        const label: string = (data.condition_label || '').toUpperCase();
+        const risk: string = (data.risk_level || '').toUpperCase();
+        let color = '#ffff00';
+        if (label.includes('NORMAL') || risk === 'LOW') color = '#00ff00';
+        else if (label.includes('CRITICAL') || risk === 'HIGH') color = '#ff0000';
+        else color = '#ffff00'; // medium
+        setBridgeColor(color);
+      } catch (e) {
+        // keep last color on failure
+      }
+    };
+    fetchHealth();
+    t = setInterval(fetchHealth, 1800);
+    return () => clearInterval(t);
+  }, []);
+
   // Get status info
   const getStatusInfo = () => {
     const status = sensorData.status;
@@ -1049,7 +1083,7 @@ const ArduinoSimulation: React.FC = () => {
       </div> */}
 
       {/* Left Side: 3D Bridge Visualization - 70% */}
-      <div style={{ width: "70%", height: "100%", position: "relative" as const, borderRight: "1px solid rgba(255,255,255,0.1)" }}>
+      <div style={{ width: "75%", height: "100%", position: "relative" as const, borderRight: "1px solid rgba(255,255,255,0.1)" }}>
         <Suspense fallback={<LoadingSpinner />}>
           <Canvas 
             camera={{ position: [10, 6, 10], fov: 50 }}
@@ -1069,14 +1103,13 @@ const ArduinoSimulation: React.FC = () => {
               maxDistance={25}
             />
             
-            <ModelWithFallback sensorData={sensorData} />
+            <ModelWithFallback sensorData={sensorData} overrideColor={bridgeColor ?? undefined} />
             
             {/* No ground plane or grid - completely removed */}
           </Canvas>
         </Suspense>
 
-      {/* Bridge Health Status + Statistics (from FastAPI) */}
-        <BridgeHealthPanel />
+      
 
         {/* Data History Chart */}
         {/* {dataHistory.length > 5 && (
@@ -1136,75 +1169,17 @@ const ArduinoSimulation: React.FC = () => {
         </div>
       </div>
 
-      {/* Right Side: 6 Sensor Graphs - 30% */}
+      {/* Right Side: Bridge Health Dashboard (FastAPI) */}
       <div style={{
-        width: "30%",
+        width: "25%",
         height: "100%",
-        padding: "15px",
+        padding: "16px",
         overflowY: "auto" as const,
         display: "flex",
-        flexDirection: "column" as const
+        flexDirection: "column" as const,
+        gap: "14px"
       }}>
-        {/* Header */}
-        <div style={{ marginBottom: "12px", marginTop: "40px" }}>
-          <h2 style={{ margin: 0, fontSize: "16px", color: "white", fontWeight: "300" }}>
-             Sensor Graphs
-          </h2>
-          <p style={{ margin: "3px 0 0 0", fontSize: "11px", color: "#aaa" }}>
-            Accelerometer & Gyroscope
-          </p>
-        </div>
-
-        {/* Graphs Grid */}
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: "1fr",
-          gap: "10px",
-          flex: 1
-        }}>
-          <SensorGraph
-            title="Accelerometer X-Axis"
-            data={accelXHistory}
-            color="#FF6B6B"
-            unit="m/s²"
-            currentValue={sensorData.sensors.accelerometer.x}
-          />
-          <SensorGraph
-            title="Accelerometer Y-Axis"
-            data={accelYHistory}
-            color="#4ECDC4"
-            unit="m/s²"
-            currentValue={sensorData.sensors.accelerometer.y}
-          />
-          <SensorGraph
-            title="Accelerometer Z-Axis"
-            data={accelZHistory}
-            color="#45B7D1"
-            unit="m/s²"
-            currentValue={sensorData.sensors.accelerometer.z}
-          />
-          <SensorGraph
-            title="Gyroscope X-Axis"
-            data={gyroXHistory}
-            color="#FFA07A"
-            unit="°/s"
-            currentValue={sensorData.sensors.gyroscope?.x || 0}
-          />
-          <SensorGraph
-            title="Gyroscope Y-Axis"
-            data={gyroYHistory}
-            color="#98D8C8"
-            unit="°/s"
-            currentValue={sensorData.sensors.gyroscope?.y || 0}
-          />
-          <SensorGraph
-            title="Gyroscope Z-Axis"
-            data={gyroZHistory}
-            color="#F7DC6F"
-            unit="°/s"
-            currentValue={sensorData.sensors.gyroscope?.z || 0}
-          />
-        </div>
+        <BridgeHealthFromFastAPI />
       </div>
     </div>
   );
@@ -1275,7 +1250,7 @@ function BridgeHealthPanel() {
   const meterPct = Math.round(Math.min(Math.max(avgRisk, 0), 1) * 100);
 
   return (
-    <div style={{ position: "absolute" as const, top: 20, right: 20, width: 360, zIndex: 200 }}>
+    <div style={{ position: "absolute" as const, top: 250, right: 0, width: 320, zIndex: 200 }}>
       {/* Bridge Health Status Card */}
       <div style={{
         background: "rgba(0,0,0,0.85)", border: "1px solid rgba(255,255,255,0.1)",
@@ -1340,3 +1315,94 @@ function BridgeHealthPanel() {
 }
 
 export default ArduinoSimulation;
+
+// --- Dashboard that mirrors python/index.html using FastAPI /predict ---
+interface PredictResponse {
+  timestamp: number;
+  degradation_score: number;
+  forecast_score_next_30d: number;
+  structural_condition: number;
+  condition_label: string;
+  confidence: number; // 0..1
+  risk_level: string;
+  description: string;
+  color: string; // hex
+}
+
+function BridgeHealthFromFastAPI() {
+  const [latest, setLatest] = useState<PredictResponse | null>(null);
+  const [trend, setTrend] = useState<PredictResponse[]>([]);
+  const API = "http://127.0.0.1:8000/predict";
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    const tick = async () => {
+      try {
+        const res = await fetch(API);
+        const data: PredictResponse = await res.json();
+        setLatest(data);
+        setTrend((prev) => [...prev.slice(-19), data]); // keep last 20
+      } catch (e) {
+        // ignore fetch failures to avoid UI spam
+      }
+    };
+    tick();
+    timer = setInterval(tick, 2500);
+    return () => clearInterval(timer);
+  }, []);
+
+  const riskPct = Math.round(((latest?.confidence ?? 0) * 100));
+
+  return (
+    <>
+      {/* Health card */}
+      <div style={{
+        background: "rgba(0,0,0,0.85)", border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: 12, color: "#fff", padding: 16,
+      }}>
+        <div style={{ color: "#22d3ee", fontWeight: 700, marginBottom: 8 }}>Bridge Health Status</div>
+        <div style={{ fontSize: 28, fontWeight: 800, marginBottom: 10 }}>
+          {(latest?.condition_label || "--").replace('_', ' ')}
+        </div>
+        <div style={{ fontSize: 13, marginBottom: 4 }}>Risk Level: <span style={{ color: "#f87171", fontWeight: 700 }}>{latest?.risk_level || "--"}</span></div>
+        <div style={{ fontSize: 13, marginBottom: 4 }}>Degradation Score: <span style={{ color: "#93c5fd", fontWeight: 700 }}>{latest?.degradation_score?.toFixed?.(2) ?? "--"}</span></div>
+        <div style={{ fontSize: 13, marginBottom: 4 }}>Forecast (Next 30d): <span style={{ color: "#22d3ee", fontWeight: 700 }}>{latest?.forecast_score_next_30d?.toFixed?.(2) ?? "--"}</span></div>
+        <div style={{ fontSize: 13, marginBottom: 4 }}>Confidence: <span style={{ color: "#22c55e", fontWeight: 700 }}>{latest ? (latest.confidence*100).toFixed(1) + '%' : '--'}</span></div>
+        <div style={{ fontSize: 12, color: "#bbb", marginTop: 6 }}>{latest?.description || ''}</div>
+        <div style={{ marginTop: 10, marginBottom: 6, color: "#22c55e", fontWeight: 700 }}>Risk Meter</div>
+        <div style={{ height: 16, background: "rgba(255,255,255,0.08)", borderRadius: 20, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" }}>
+          <div style={{
+            width: `${riskPct}%`, height: "100%",
+            background: "linear-gradient(90deg, #22c55e, #eab308, #ef4444)",
+            transition: "width 0.4s ease"
+          }} />
+        </div>
+      </div>
+
+      {/* Trend chart */}
+      <div style={{
+        background: "rgba(0,0,0,0.85)", border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: 12, color: "#fff", padding: 12, height: 300
+      }}>
+        <div style={{ color: "#22d3ee", fontWeight: 700, marginBottom: 8 }}>Score Trends</div>
+        <div style={{ width: "100%", height: 250 }}>
+          <ResponsiveContainer>
+            <LineChart data={trend.map(t => ({
+              time: new Date(t.timestamp).toLocaleTimeString(),
+              degradation: t.degradation_score,
+              forecast: t.forecast_score_next_30d,
+            }))}>
+              <CartesianGrid stroke="rgba(255,255,255,0.1)" />
+              <XAxis dataKey="time" stroke="#9CA3AF" tick={{ fontSize: 10 }} hide={false} />
+              <YAxis stroke="#9CA3AF" domain={[50, 100]} tick={{ fontSize: 10 }} />
+              <Tooltip contentStyle={{ background: '#111827', border: '1px solid rgba(255,255,255,0.1)' }} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Line type="monotone" dataKey="degradation" stroke="#f59e0b" dot={false} strokeWidth={2} />
+              <Line type="monotone" dataKey="forecast" stroke="#22d3ee" dot={false} strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </>
+  );
+}

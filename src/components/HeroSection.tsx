@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowRight, Shield, TrendingUp, Zap } from "lucide-react";
 import heroImage from "@/assets/hero-setu-ai.jpg";
 import { useSlideUpOnVisible } from "@/hooks/useSlideUpOnVisible";
+import ArduinoSimulation from "./ArduinoSimulation";
 
 const HeroSection = () => {
   const { ref, visible } = useSlideUpOnVisible();
@@ -58,7 +59,7 @@ const HeroSection = () => {
         <Button 
           size="lg" 
           className="bg-primary hover:bg-primary-glow text-primary-foreground transition-all duration-300 shadow-elegant group"
-          onClick={() => window.location.href = '/auth'}
+          onClick={() => window.location.href = '/arduino'}
         >
           Get Started
           <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />

@@ -2,9 +2,7 @@ import React, { useRef, useState, useEffect, Suspense } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
-import { useAuth } from "@/hooks/useAuth";
-import { Navigate } from 'react-router-dom';
-import { LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import MPUDatadashboard from '@/components/xgraph';
 
 // Define the sensor data type matching Arduino JSON format
 interface ArduinoSensorData {
@@ -34,22 +32,87 @@ interface ArduinoSensorData {
   };
 }
 
+// --- Interfaces ---
+interface MPUData {
+    device_id?: string;
+    ax: number;
+    ay: number;
+    az: number;
+    gx: number;
+    gy: number;
+    gz: number;
+    temperature_c: number; 
+    humidity_percent: number;
+}
+
+interface PredictionResult {
+    degradation_score: number;
+    condition: 'normal' | 'minor' | 'moderate' | 'severe';
+    forecast_30d: number;
+    confidence: number;
+}
+
+// --- Global Configuration ---
+const BACKEND_API_IP: string = 'localhost'; //192.168.45.84
+const BACKEND_PORT: number = 8000;
+const DATA_FETCH_ENDPOINT: string = '/latest'; 
+const RAW_DATA_FETCH_INTERVAL_MS: number = 500;
+const PREDICTION_INTERVAL_MS: number = 5000;
+const MAX_RETRIES: number = 5;
+const MAX_POINTS: number = 50;
+
+// --- Prediction Calculation Logic ---
+const computePredictions = (data: MPUData): PredictionResult => {
+    const { ax, ay, az, gx, gy, gz } = data;
+    const accel_mag = Math.sqrt(ax * ax + ay * ay + az * az);
+    const gyro_mag = Math.sqrt(gx * gx + gy * gy + gz * gz);
+
+    const rawDegradation = (accel_mag * 0.8 + gyro_mag * 0.2) / 5.0;
+    const degradation = Math.min(1.0, rawDegradation);
+
+    let condition: 'normal' | 'minor' | 'moderate' | 'severe';
+    if (degradation < 0.15) {
+        condition = "normal";
+    } else if (degradation < 0.3) {
+        condition = "minor";
+    } else if (degradation < 0.6) {
+        condition = "moderate";
+    } else {
+        condition = "severe";
+    }
+
+    const forecast_30d = Math.min(1.0, degradation + 0.01 + Math.random() * 0.09);
+    const confidence = 1.0 - Math.random() * 0.08;
+
+    return {
+        degradation_score: parseFloat(degradation.toFixed(3)),
+        condition: condition,
+        forecast_30d: parseFloat(forecast_30d.toFixed(3)),
+        confidence: parseFloat(confidence.toFixed(3)),
+    };
+};
+
+// --- Prediction Panel Component ---
+// (No changes to the presentation logic here)
+interface PredictionPanelProps {
+    data: MPUData;
+    prediction: PredictionResult;
+}
+
+
+
+
 // Simple fallback bridge component using basic geometries
-function FallbackBridge({ sensorData, overrideColor }: { sensorData: ArduinoSensorData; overrideColor?: string }) {
-  const { user, userRole, signOut, loading } = useAuth();
+function FallbackBridge({ sensorData }: { sensorData: ArduinoSensorData }) {
   const groupRef = useRef<THREE.Group>(null!);
 
   // Animation disabled - bridge is static
 
-  if (!user) {
-      return <Navigate to="/auth" replace />;
-    }
-  // Determine color from FastAPI override first, then strain fallback
+  // Determine color based on strain
   const getColor = (): string => {
-    if (overrideColor) return overrideColor;
-    if (sensorData.sensors.strain < 1000) return "#00ff00"; // Green
-    if (sensorData.sensors.strain < 2000) return "#ffff00"; // Yellow
-    return "#ff0000"; // Red
+    if (sensorData.sensors.strain < 1000) return "black"; // Green
+    if (sensorData.sensors.strain < 2000) return "black"; // Yellow
+    return "black"; // Red
   };
 
   return (
@@ -88,11 +151,18 @@ function FallbackBridge({ sensorData, overrideColor }: { sensorData: ArduinoSens
 }
 
 // CAD Model Bridge Component
-function CADModelBridge({ sensorData, overrideColor }: { sensorData: ArduinoSensorData; overrideColor?: string }) {
+function CADModelBridge({ sensorData }: { sensorData: ArduinoSensorData }) {
   const groupRef = useRef<THREE.Group>(null!);
   const [error, setError] = useState<string | null>(null);
   const [modelLoaded, setModelLoaded] = useState(false);
 
+  const initialData: MPUData = {
+        ax: 0, ay: 0, az: 0, 
+        gx: 0, gy: 0, gz: 0, 
+        temperature_c: 0,
+        humidity_percent: 0
+    };
+    
   // Load the GLB model
   let gltf;
   try {
@@ -125,12 +195,10 @@ function CADModelBridge({ sensorData, overrideColor }: { sensorData: ArduinoSens
     if (!clonedScene) return;
 
     let color: THREE.Color;
-    if (overrideColor) {
-      color = new THREE.Color(overrideColor);
-    } else if (sensorData.sensors.strain < 1000) {
-      color = new THREE.Color(0x00ff00); // Green
+    if (sensorData.sensors.strain < 1000) {
+      color = new THREE.Color(0xff0000); // Green
     } else if (sensorData.sensors.strain < 2000) {
-      color = new THREE.Color(0xffff00); // Yellow
+      color = new THREE.Color(0xff0000); // Yellow
     } else {
       color = new THREE.Color(0xff0000); // Red
     }
@@ -156,7 +224,7 @@ function CADModelBridge({ sensorData, overrideColor }: { sensorData: ArduinoSens
         });
       }
     });
-  }, [sensorData.sensors.strain, clonedScene, overrideColor]);
+  }, [sensorData.sensors.strain, clonedScene]);
 
   // Show fallback if model failed to load
   if (error || !gltf || !clonedScene) {
@@ -171,7 +239,7 @@ function CADModelBridge({ sensorData, overrideColor }: { sensorData: ArduinoSens
 }
 
 // Model Loader with error boundaries
-function ModelWithFallback({ sensorData, overrideColor }: { sensorData: ArduinoSensorData; overrideColor?: string }) {
+function ModelWithFallback({ sensorData }: { sensorData: ArduinoSensorData }) {
   const [useCAD, setUseCAD] = useState(true);
   const [loadError, setLoadError] = useState(false);
 
@@ -182,13 +250,13 @@ function ModelWithFallback({ sensorData, overrideColor }: { sensorData: ArduinoS
   };
 
   if (loadError || !useCAD) {
-    return <FallbackBridge sensorData={sensorData} overrideColor={overrideColor} />;
+    return <FallbackBridge sensorData={sensorData} />;
   }
 
   return (
     <Suspense fallback={<FallbackBridge sensorData={sensorData} />}>
       <ErrorBoundary onError={handleError}>
-        <CADModelBridge sensorData={sensorData} overrideColor={overrideColor} />
+        <CADModelBridge sensorData={sensorData} />
       </ErrorBoundary>
     </Suspense>
   );
@@ -345,7 +413,6 @@ const ArduinoSimulation: React.FC = () => {
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [error, setError] = useState<string | null>(null);
   const [dataHistory, setDataHistory] = useState<ArduinoSensorData[]>([]);
-  const [bridgeColor, setBridgeColor] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const simulationIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -783,29 +850,6 @@ const ArduinoSimulation: React.FC = () => {
     };
   }, []);
 
-  // Poll FastAPI to determine bridge color (green/yellow/red)
-  useEffect(() => {
-    let t: NodeJS.Timeout;
-    const fetchHealth = async () => {
-      try {
-        const res = await fetch('http://127.0.0.1:8000/predict');
-        const data = await res.json();
-        const label: string = (data.condition_label || '').toUpperCase();
-        const risk: string = (data.risk_level || '').toUpperCase();
-        let color = '#ffff00';
-        if (label.includes('NORMAL') || risk === 'LOW') color = '#00ff00';
-        else if (label.includes('CRITICAL') || risk === 'HIGH') color = '#ff0000';
-        else color = '#ffff00'; // medium
-        setBridgeColor(color);
-      } catch (e) {
-        // keep last color on failure
-      }
-    };
-    fetchHealth();
-    t = setInterval(fetchHealth, 1800);
-    return () => clearInterval(t);
-  }, []);
-
   // Get status info
   const getStatusInfo = () => {
     const status = sensorData.status;
@@ -836,84 +880,7 @@ const ArduinoSimulation: React.FC = () => {
       `}</style>
 
       {/* Connection Status with Simulation Toggle */}
-      <div style={{
-        position: "absolute" as const,
-        top: "20px",
-        left: "50%",
-        transform: "translateX(-50%)",
-        background: useArduino ? "rgba(59, 130, 246, 0.4)" :
-                   useSimulation ? "rgba(15, 51, 234, 0.4)" :
-                   connectionStatus === 'connected' ? "rgba(34, 197, 94, 0.4)" : 
-                   connectionStatus === 'connecting' ? "rgba(245, 158, 11, 0.4)" : "rgba(239, 68, 68, 0.9)",
-        color: "white",
-        padding: "10px 20px",
-        borderRadius: "8px",
-        fontSize: "13px",
-        zIndex: 1000,
-        display: "flex",
-        alignItems: "center",
-        gap: "12px",
-        boxShadow: "0 4px 6px rgba(0,0,0,0.3)"
-      }}>
-        <span style={{ fontWeight: "500" }}>
-          {useArduino ? ` Arduino: ${arduinoIP}` :
-           useSimulation ? ' Simulation Mode' :
-           connectionStatus === 'connected' ? '🔗 Connected' :
-           connectionStatus === 'connecting' ? '🔗 Connecting...' : '🔗 Disconnected'}
-        </span>
-        {useSimulation && (
-          <button
-            onClick={stopSimulation}
-            style={{
-              background: "rgba(255, 255, 255, 0.25)",
-              border: "1px solid rgba(255, 255, 255, 0.4)",
-              color: "white",
-              padding: "5px 12px",
-              borderRadius: "5px",
-              cursor: "pointer",
-              fontSize: "12px",
-              fontWeight: "500"
-            }}
-          >
-            Stop
-          </button>
-        )}
-        {useArduino && (
-          <button
-            onClick={stopArduinoConnection}
-            style={{
-              background: "rgba(255, 255, 255, 0.25)",
-              border: "1px solid rgba(255, 255, 255, 0.4)",
-              color: "white",
-              padding: "5px 12px",
-              borderRadius: "5px",
-              cursor: "pointer",
-              fontSize: "12px",
-              fontWeight: "500"
-            }}
-          >
-            Disconnect
-          </button>
-        )}
-        {!useSimulation && !useArduino && connectionStatus !== 'connected' && (
-          <button
-            onClick={startSimulation}
-            style={{
-              background: "rgba(147, 51, 234, 0.9)",
-              border: "1px solid rgba(147, 51, 234, 1)",
-              color: "white",
-              padding: "5px 12px",
-              borderRadius: "5px",
-              cursor: "pointer",
-              fontSize: "12px",
-              fontWeight: "500"
-            }}
-          >
-            Simulate
-          </button>
-        )}
-      </div>
-
+      
       {/* Arduino IP Input */}
       {!useArduino && !useSimulation && (
         <div style={{
@@ -1083,7 +1050,7 @@ const ArduinoSimulation: React.FC = () => {
       </div> */}
 
       {/* Left Side: 3D Bridge Visualization - 70% */}
-      <div style={{ width: "75%", height: "100%", position: "relative" as const, borderRight: "1px solid rgba(255,255,255,0.1)" }}>
+      <div style={{ width: "70%", height: "100%", position: "relative" as const, borderRight: "1px solid rgba(255,255,255,0.1)" }}>
         <Suspense fallback={<LoadingSpinner />}>
           <Canvas 
             camera={{ position: [10, 6, 10], fov: 50 }}
@@ -1103,13 +1070,14 @@ const ArduinoSimulation: React.FC = () => {
               maxDistance={25}
             />
             
-            <ModelWithFallback sensorData={sensorData} overrideColor={bridgeColor ?? undefined} />
+            <ModelWithFallback sensorData={sensorData} />
             
             {/* No ground plane or grid - completely removed */}
           </Canvas>
         </Suspense>
 
-      
+      {/* Bridge Health Status + Statistics (from FastAPI) */}
+        <BridgeHealthPanel />
 
         {/* Data History Chart */}
         {/* {dataHistory.length > 5 && (
@@ -1169,17 +1137,17 @@ const ArduinoSimulation: React.FC = () => {
         </div>
       </div>
 
-      {/* Right Side: Bridge Health Dashboard (FastAPI) */}
+      {/* Right Side: 6 Sensor Graphs - 30% */}
+     
       <div style={{
-        width: "25%",
+        width: "30%",
         height: "100%",
-        padding: "16px",
+        padding: "15px",
         overflowY: "auto" as const,
         display: "flex",
-        flexDirection: "column" as const,
-        gap: "14px"
+        flexDirection: "column" as const
       }}>
-        <BridgeHealthFromFastAPI />
+         <MPUDatadashboard/>
       </div>
     </div>
   );
@@ -1250,159 +1218,11 @@ function BridgeHealthPanel() {
   const meterPct = Math.round(Math.min(Math.max(avgRisk, 0), 1) * 100);
 
   return (
-    <div style={{ position: "absolute" as const, top: 250, right: 0, width: 320, zIndex: 200 }}>
-      {/* Bridge Health Status Card */}
-      <div style={{
-        background: "rgba(0,0,0,0.85)", border: "1px solid rgba(255,255,255,0.1)",
-        borderRadius: 12, color: "#fff", padding: 16, marginBottom: 14,
-        boxShadow: "0 10px 25px rgba(0,0,0,0.35)"
-      }}>
-        <div style={{ color: "#22d3ee", fontWeight: 700, marginBottom: 8 }}>
-          🧱 Bridge Health Status
-        </div>
-        <div style={{ fontSize: 12, color: "#9CA3AF", marginBottom: 6 }}>{health?.model || "Model"}</div>
-        <div style={{ fontSize: 26, fontWeight: 800, marginBottom: 10 }}>
-          {statusTitle}
-        </div>
-        <div style={{ fontSize: 13, marginBottom: 4 }}>Risk Level: <span style={{ color: statusColor, fontWeight: 700 }}>{riskLevel}</span></div>
-        <div style={{ fontSize: 13, marginBottom: 4 }}>Confidence: <span style={{ color: "#22c55e", fontWeight: 700 }}>{(avgConf*100).toFixed(1)}%</span></div>
-        <div style={{ fontSize: 13, marginBottom: 8 }}>Risk Score: <span style={{ color: "#93c5fd", fontWeight: 700 }}>{avgRisk.toFixed(2)}</span></div>
-        <div style={{ fontSize: 12, color: "#bbb", marginBottom: 10 }}>
-          {anomalyRate >= 10 ? "Critical stress, frequent anomalies detected" :
-           anomalyRate >= 5 ? "Elevated stress, intermittent anomalies observed" :
-           "Structure operating within normal parameters"}
-        </div>
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6, color: "#22c55e" }}>Risk Meter</div>
-        <div style={{ height: 14, width: "100%", background: "rgba(255,255,255,0.08)", borderRadius: 20, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" }}>
-          <div style={{
-            width: `${meterPct}%`, height: "100%",
-            background: "linear-gradient(90deg, #22c55e, #eab308, #ef4444)",
-            transition: "width 0.4s ease"
-          }} />
-        </div>
-      </div>
-
-      {/* Statistics Card */}
-      <div style={{
-        background: "rgba(0,0,0,0.85)", border: "1px solid rgba(255,255,255,0.1)",
-        borderRadius: 12, color: "#fff", padding: 16,
-        boxShadow: "0 10px 25px rgba(0,0,0,0.35)"
-      }}>
-        <div style={{ color: "#34d399", fontWeight: 700, marginBottom: 10 }}>
-          📊 Statistics
-        </div>
-        {!stats && !error && <div style={{ color: "#bbb", fontSize: 12 }}>Connecting to FastAPI...</div>}
-        {error && <div style={{ color: "#f88", fontSize: 12 }}>FastAPI error: {error}</div>}
-        {stats && (
-          <div style={{ display: "grid", gap: 8, fontSize: 14 }}>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "#aaa" }}>Total Predictions:</span>
-              <span style={{ fontWeight: 700 }}>{total.toLocaleString()}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "#aaa" }}>Avg Confidence:</span>
-              <span style={{ fontWeight: 700 }}>{(avgConf*100).toFixed(1)}%</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "#aaa" }}>Avg Risk:</span>
-              <span style={{ fontWeight: 700 }}>{avgRisk.toFixed(2)}</span>
-            </div>
-          </div>
-        )}
-      </div>
+    <div style={{ position: "absolute" as const, top: 350, right: 2, width: 360, zIndex: 200 }}>
+      
+        
     </div>
   );
 }
 
 export default ArduinoSimulation;
-
-// --- Dashboard that mirrors python/index.html using FastAPI /predict ---
-interface PredictResponse {
-  timestamp: number;
-  degradation_score: number;
-  forecast_score_next_30d: number;
-  structural_condition: number;
-  condition_label: string;
-  confidence: number; // 0..1
-  risk_level: string;
-  description: string;
-  color: string; // hex
-}
-
-function BridgeHealthFromFastAPI() {
-  const [latest, setLatest] = useState<PredictResponse | null>(null);
-  const [trend, setTrend] = useState<PredictResponse[]>([]);
-  const API = "http://127.0.0.1:8000/predict";
-
-  useEffect(() => {
-    let timer: NodeJS.Timeout;
-    const tick = async () => {
-      try {
-        const res = await fetch(API);
-        const data: PredictResponse = await res.json();
-        setLatest(data);
-        setTrend((prev) => [...prev.slice(-19), data]); // keep last 20
-      } catch (e) {
-        // ignore fetch failures to avoid UI spam
-      }
-    };
-    tick();
-    timer = setInterval(tick, 2500);
-    return () => clearInterval(timer);
-  }, []);
-
-  const riskPct = Math.round(((latest?.confidence ?? 0) * 100));
-
-  return (
-    <>
-      {/* Health card */}
-      <div style={{
-        background: "rgba(0,0,0,0.85)", border: "1px solid rgba(255,255,255,0.1)",
-        borderRadius: 12, color: "#fff", padding: 16,
-      }}>
-        <div style={{ color: "#22d3ee", fontWeight: 700, marginBottom: 8 }}>Bridge Health Status</div>
-        <div style={{ fontSize: 28, fontWeight: 800, marginBottom: 10 }}>
-          {(latest?.condition_label || "--").replace('_', ' ')}
-        </div>
-        <div style={{ fontSize: 13, marginBottom: 4 }}>Risk Level: <span style={{ color: "#f87171", fontWeight: 700 }}>{latest?.risk_level || "--"}</span></div>
-        <div style={{ fontSize: 13, marginBottom: 4 }}>Degradation Score: <span style={{ color: "#93c5fd", fontWeight: 700 }}>{latest?.degradation_score?.toFixed?.(2) ?? "--"}</span></div>
-        <div style={{ fontSize: 13, marginBottom: 4 }}>Forecast (Next 30d): <span style={{ color: "#22d3ee", fontWeight: 700 }}>{latest?.forecast_score_next_30d?.toFixed?.(2) ?? "--"}</span></div>
-        <div style={{ fontSize: 13, marginBottom: 4 }}>Confidence: <span style={{ color: "#22c55e", fontWeight: 700 }}>{latest ? (latest.confidence*100).toFixed(1) + '%' : '--'}</span></div>
-        <div style={{ fontSize: 12, color: "#bbb", marginTop: 6 }}>{latest?.description || ''}</div>
-        <div style={{ marginTop: 10, marginBottom: 6, color: "#22c55e", fontWeight: 700 }}>Risk Meter</div>
-        <div style={{ height: 16, background: "rgba(255,255,255,0.08)", borderRadius: 20, overflow: "hidden", border: "1px solid rgba(255,255,255,0.1)" }}>
-          <div style={{
-            width: `${riskPct}%`, height: "100%",
-            background: "linear-gradient(90deg, #22c55e, #eab308, #ef4444)",
-            transition: "width 0.4s ease"
-          }} />
-        </div>
-      </div>
-
-      {/* Trend chart */}
-      <div style={{
-        background: "rgba(0,0,0,0.85)", border: "1px solid rgba(255,255,255,0.1)",
-        borderRadius: 12, color: "#fff", padding: 12, height: 300
-      }}>
-        <div style={{ color: "#22d3ee", fontWeight: 700, marginBottom: 8 }}>Score Trends</div>
-        <div style={{ width: "100%", height: 250 }}>
-          <ResponsiveContainer>
-            <LineChart data={trend.map(t => ({
-              time: new Date(t.timestamp).toLocaleTimeString(),
-              degradation: t.degradation_score,
-              forecast: t.forecast_score_next_30d,
-            }))}>
-              <CartesianGrid stroke="rgba(255,255,255,0.1)" />
-              <XAxis dataKey="time" stroke="#9CA3AF" tick={{ fontSize: 10 }} hide={false} />
-              <YAxis stroke="#9CA3AF" domain={[50, 100]} tick={{ fontSize: 10 }} />
-              <Tooltip contentStyle={{ background: '#111827', border: '1px solid rgba(255,255,255,0.1)' }} />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-              <Line type="monotone" dataKey="degradation" stroke="#f59e0b" dot={false} strokeWidth={2} />
-              <Line type="monotone" dataKey="forecast" stroke="#22d3ee" dot={false} strokeWidth={2} />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-    </>
-  );
-}

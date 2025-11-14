@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MPU6050 Sensor Monitor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f9;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        .container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            width: 90%;
+            max-width: 600px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 25px;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+
+        .data-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .reading-card {
+            background-color: #ecf0f1;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            transition: transform 0.2s;
+        }
+
+        .reading-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.05);
+        }
+
+        .label {
+            font-size: 0.9em;
+            color: #7f8c8d;
+            margin-bottom: 5px;
+            display: block;
+        }
+
+        .value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #2980b9;
+        }
+
+        #status {
+            text-align: center;
+            margin-top: 20px;
+            font-style: italic;
+            color: #e74c3c;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>MPU6050 Live Readings</h1>
+
+        <!-- Data Grid for Sensor Readings -->
+        <div class="data-grid">
+            <div class="reading-card">
+                <span class="label">Accel X (g)</span>
+                <div id="accelX" class="value">--</div>
+            </div>
+            <div class="reading-card">
+                <span class="label">Accel Y (g)</span>
+                <div id="accelY" class="value">--</div>
+            </div>
+            <div class="reading-card">
+                <span class="label">Accel Z (g)</span>
+                <div id="accelZ" class="value">--</div>
+            </div>
+
+            <div class="reading-card">
+                <span class="label">Gyro X (°/s)</span>
+                <div id="gyroX" class="value">--</div>
+            </div>
+            <div class="reading-card">
+                <span class="label">Gyro Y (°/s)</span>
+                <div id="gyroY" class="value">--</div>
+            </div>
+            <div class="reading-card">
+                <span class="label">Gyro Z (°/s)</span>
+                <div id="gyroZ" class="value">--</div>
+            </div>
+
+            <div class="reading-card" style="grid-column: span 2; background-color: #d1eef8;">
+                <span class="label">Temperature (°C)</span>
+                <div id="tempC" class="value" style="color: #1a5e8e;">--</div>
+            </div>
+        </div>
+
+        <p id="status">Connecting...</p>
+    </div>
+
+    <script>
+        // === CONFIGURATION ===
+        // IMPORTANT: Replace '192.168.1.100' with the actual IP address of your ESP32.
+        const ESP32_IP = '192.168.1.100';
+        const DATA_ENDPOINT = '/data'; // Assumes your ESP32 serves data on this path
+        const FETCH_INTERVAL_MS = 1000; // Fetch data every 1 second
+
+        const url = `http://${ESP32_IP}${DATA_ENDPOINT}`;
+        const statusElement = document.getElementById('status');
+
+        // Maps JSON keys to their corresponding element IDs
+        const DATA_MAP = {
+            accelX: 'accelX',
+            accelY: 'accelY',
+            accelZ: 'accelZ',
+            gyroX: 'gyroX',
+            gyroY: 'gyroY',
+            gyroZ: 'gyroZ',
+            tempC: 'tempC',
+        };
+
+        // --- Mocking Function for Demonstration ---
+        // Since we can't connect to a real ESP32, this simulates real data updates.
+        function generateMockData() {
+            return {
+                accelX: (Math.random() * 2 - 1).toFixed(2), // -1.00 to 1.00
+                accelY: (Math.random() * 20 - 10).toFixed(2), // -10.00 to 10.00
+                accelZ: (Math.random() * 2 - 1).toFixed(2),
+                gyroX: (Math.random() * 100 - 50).toFixed(1), // -50.0 to 50.0
+                gyroY: (Math.random() * 100 - 50).toFixed(1),
+                gyroZ: (Math.random() * 100 - 50).toFixed(1),
+                tempC: (20 + Math.random() * 10).toFixed(1), // 20.0 to 30.0
+            };
+        }
+        // ------------------------------------------
+
+
+        /**
+         * Fetches data from the ESP32 and updates the dashboard.
+         */
+        async function fetchMpuData() {
+            try {
+                // --- ACTUAL FETCH LOGIC (Uncomment to use with real ESP32) ---
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                statusElement.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+                statusElement.style.color = '#27ae60';
+                -------------------------------------------------------------
+
+                // --- MOCK LOGIC (Comment out for real ESP32 use) ---
+                // // Use a delay to simulate network latency
+                // await new Promise(resolve => setTimeout(resolve, 100));
+                // const data = generateMockData();
+                // statusElement.textContent = `[MOCK DATA] Last updated: ${new Date().toLocaleTimeString()}. Target IP: ${ESP32_IP}`;
+                // statusElement.style.color = '#2c3e50';
+                // ---------------------------------------------------
+
+
+                // Update the DOM elements
+                for (const key in DATA_MAP) {
+                    if (data.hasOwnProperty(key)) {
+                        const element = document.getElementById(DATA_MAP[key]);
+                        if (element) {
+                            element.textContent = data[key];
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error("Could not fetch data:", error);
+                statusElement.textContent = `Error: Could not connect to ${url}. Check ESP32 status.`;
+                statusElement.style.color = '#e74c3c';
+
+                // Set all values to error state
+                for (const key in DATA_MAP) {
+                    const element = document.getElementById(DATA_MAP[key]);
+                    if (element) {
+                        element.textContent = 'ERR';
+                    }
+                }
+            }
+        }
+
+        // Start fetching data when the window loads
+        window.onload = function() {
+            // Fetch immediately upon load
+            fetchMpuData();
+            // Then set an interval for periodic updates
+            setInterval(fetchMpuData, FETCH_INTERVAL_MS);
+        }
+    </script>
+</body>
+</html>

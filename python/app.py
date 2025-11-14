@@ -50,7 +50,7 @@ def generate_synthetic_data() -> Dict:
     forecast = round(degradation + random.uniform(-5, 5), 2)
 
     return {
-        "timestamp": int(time.time() * 2000),
+        "timestamp": int(time.time() * 10000),
         "degradation_score": degradation,
         "forecast_score_next_30d": forecast,
         "structural_condition": condition_labels.index(condition),
